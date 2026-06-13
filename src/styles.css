@@ -141,7 +141,7 @@ p {
 
 table {
   width: 100%;
-  min-width: 1080px;
+  min-width: 1180px;
   border-collapse: collapse;
 }
 
@@ -247,6 +247,21 @@ td {
   background: #f5c451;
 }
 
+.chart-button {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid #343c49;
+  border-radius: 6px;
+  background: #171b22;
+  color: #dce4ec;
+  cursor: pointer;
+}
+
+.chart-button:hover {
+  border-color: #4f76ff;
+  color: #fff;
+}
+
 .flat-badge {
   min-width: 82px;
   color: #dce4ec;
@@ -271,6 +286,93 @@ td {
 .details-row td {
   background: #151a22;
   white-space: normal;
+}
+
+.chart-row td {
+  background: #121720;
+  white-space: normal;
+}
+
+.chart-panel {
+  display: grid;
+  gap: 14px;
+  padding: 6px 0 14px;
+}
+
+.chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.chart-header div {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.chart-header strong {
+  font-size: 16px;
+}
+
+.chart-header span {
+  color: #9aa6b2;
+}
+
+.setup-chart {
+  width: 100%;
+  height: auto;
+  max-height: 430px;
+  border: 1px solid #252b33;
+  border-radius: 8px;
+  display: block;
+}
+
+.grid-line {
+  stroke: #27303b;
+  stroke-width: 1;
+}
+
+.trend-zone {
+  fill: #8d98a6;
+  opacity: 0.08;
+}
+
+.range-zone {
+  fill: #4361ee;
+  fill-opacity: 0.08;
+  stroke: #82a0ff;
+  stroke-width: 1.2;
+}
+
+.resistance-line {
+  stroke: #82a0ff;
+  stroke-width: 1.1;
+  stroke-dasharray: 4 4;
+}
+
+.support-line {
+  stroke: #82a0ff;
+  stroke-width: 1.1;
+  stroke-dasharray: 4 4;
+}
+
+.chart-label {
+  fill: #9aa6b2;
+  font-size: 12px;
+  font-family: "JetBrains Mono", "Roboto Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.chart-diagnostics {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(130px, 1fr));
+  gap: 12px;
+}
+
+.chart-fallback {
+  padding: 22px 0;
+  color: #8d98a6;
 }
 
 .details-grid {
@@ -354,6 +456,7 @@ li + li {
   }
 
   .details-grid,
+  .chart-diagnostics,
   .reason-columns {
     grid-template-columns: 1fr;
   }

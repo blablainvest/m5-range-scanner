@@ -21,6 +21,7 @@
   - sortable table;
   - кликабельный тикер на Bybit;
   - rating, 24h turnover, price position, direction, status, class, flat quality, volume ratio, range width;
+  - кнопка `Свой график` с inline SVG-свечами, support/resistance, прямоугольником диапазона и зоной предшествующего тренда;
   - раскрытие строки с уровнями, R2, ADX, slope, inside ratios, reasons и warnings.
 
 ## Логика флэта

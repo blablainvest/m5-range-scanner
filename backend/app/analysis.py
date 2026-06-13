@@ -5,7 +5,7 @@ from statistics import mean
 from typing import Optional
 
 from .config import config
-from .models import Candle, ScanResult, Ticker
+from .models import Candle, ChartCandle, ScanResult, Ticker
 
 
 @dataclass
@@ -17,6 +17,10 @@ class LevelCluster:
 @dataclass
 class RangeCandidate:
     window: int
+    range_start_index: int
+    range_end_index: int
+    trend_start_index: int
+    trend_end_index: int
     support: float
     resistance: float
     support_touches: int
@@ -354,6 +358,20 @@ def turnover_metrics(all_closed: list[Candle], range_start_index: int, range_can
     return turnover_1h, range_avg, previous_avg, ratio
 
 
+def to_chart_candles(candles: list[Candle]) -> list[ChartCandle]:
+    return [
+        ChartCandle(
+            timestamp=candle.timestamp,
+            open=candle.open,
+            high=candle.high,
+            low=candle.low,
+            close=candle.close,
+            turnover=candle.turnover,
+        )
+        for candle in candles[-80:]
+    ]
+
+
 def setup_rating(
     sideways_confidence: int,
     sideways_quality_value: str,
@@ -473,6 +491,7 @@ def analyze_symbol(
     for window in config.range_windows:
         window_candles = closed[-window:]
         range_start_index = len(closed) - window
+        range_end_index = len(closed) - 1
         midpoint = (max(c.high for c in window_candles) + min(c.low for c in window_candles)) / 2
         highs = [window_candles[i].high for i in range(len(window_candles)) if is_local_high(window_candles, i)]
         lows = [window_candles[i].low for i in range(len(window_candles)) if is_local_low(window_candles, i)]
@@ -506,6 +525,8 @@ def analyze_symbol(
                 position = price_position(ticker.last_price, support, resistance)
 
                 prior = closed[max(0, range_start_index - 50) : range_start_index]
+                trend_start_index = max(0, range_start_index - 50)
+                trend_end_index = max(trend_start_index, range_start_index - 1)
                 trend = previous_trend(prior)
                 direction, status, trend_alignment = direction_from_trend(position, trend)
                 squeeze = squeeze_score(window_candles, support, resistance, direction, tick_size)
@@ -579,6 +600,10 @@ def analyze_symbol(
                 candidates.append(
                     RangeCandidate(
                         window=window,
+                        range_start_index=range_start_index,
+                        range_end_index=range_end_index,
+                        trend_start_index=trend_start_index,
+                        trend_end_index=trend_end_index,
                         support=support,
                         resistance=resistance,
                         support_touches=support_touches,
@@ -631,6 +656,8 @@ def analyze_symbol(
     change_1h = None
     if ticker.prev_price_1h and ticker.prev_price_1h > 0:
         change_1h = ((ticker.last_price - ticker.prev_price_1h) / ticker.prev_price_1h) * 100
+    chart_start_index = max(0, best.trend_start_index, len(closed) - 80)
+    chart_candles = to_chart_candles(closed[chart_start_index : best.range_end_index + 1])
 
     return ScanResult(
         ticker=ticker.symbol,
@@ -666,6 +693,11 @@ def analyze_symbol(
         close_inside_ratio=best.close_inside_ratio,
         body_inside_ratio=best.body_inside_ratio,
         trend_alignment=best.trend_alignment,
+        chart_candles=chart_candles,
+        range_start_timestamp=closed[best.range_start_index].timestamp,
+        range_end_timestamp=closed[best.range_end_index].timestamp,
+        trend_start_timestamp=closed[best.trend_start_index].timestamp,
+        trend_end_timestamp=closed[best.trend_end_index].timestamp,
         reasons=best.reasons,
         warnings=best.warnings,
     )

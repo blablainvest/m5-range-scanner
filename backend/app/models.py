@@ -23,6 +23,15 @@ class Candle(BaseModel):
     turnover: float
 
 
+class ChartCandle(BaseModel):
+    timestamp: int
+    open: float
+    high: float
+    low: float
+    close: float
+    turnover: float
+
+
 class Instrument(BaseModel):
     symbol: str
     status: str
@@ -78,6 +87,11 @@ class ScanResult(BaseModel):
     close_inside_ratio: float
     body_inside_ratio: float
     trend_alignment: str
+    chart_candles: list[ChartCandle]
+    range_start_timestamp: int
+    range_end_timestamp: int
+    trend_start_timestamp: int
+    trend_end_timestamp: int
     reasons: list[str]
     warnings: list[str]
 

@@ -1,4 +1,5 @@
 from backend.app.analysis import (
+    analyze_symbol,
     adx_14,
     closed_candles,
     count_independent_zone_touches,
@@ -8,8 +9,9 @@ from backend.app.analysis import (
     setup_class,
     setup_rating,
     sideways_metrics,
+    to_chart_candles,
 )
-from backend.app.models import Candle, ScanResult
+from backend.app.models import Candle, ScanResult, Ticker
 
 
 def candle(timestamp: int, open_price: float = 100, high: float = 101, low: float = 99, close: float = 100) -> Candle:
@@ -37,6 +39,20 @@ def trending_candles(count: int = 18) -> list[Candle]:
     for index in range(count):
         close = 100 + index * 0.4
         candles.append(candle(index * 300_000, open_price=close - 0.15, high=close + 0.25, low=close - 0.25, close=close))
+    return candles
+
+
+def bullish_then_flat_candles() -> list[Candle]:
+    candles = []
+    for index in range(50):
+        close = 95 + index * 0.08
+        candles.append(candle(index * 300_000, open_price=close - 0.03, high=close + 0.08, low=close - 0.08, close=close))
+    for offset in range(18):
+        index = 50 + offset
+        close = 100.25 + (0.08 if offset % 2 else -0.06)
+        high = 100.7 if offset in (1, 5, 9, 13, 17) else close + 0.08
+        low = 99.75 if offset in (2, 7, 11, 15) else close - 0.08
+        candles.append(candle(index * 300_000, open_price=close - 0.03, high=high, low=low, close=close))
     return candles
 
 
@@ -163,3 +179,27 @@ def test_scan_result_schema_exposes_flat_diagnostics_and_no_spread() -> None:
     assert "sideways_confidence" in fields
     assert "flat_r_squared" in fields
     assert "adx_14" in fields
+    assert "chart_candles" in fields
+    assert "range_start_timestamp" in fields
+    assert "trend_start_timestamp" in fields
+
+
+def test_chart_candles_are_limited_to_80() -> None:
+    candles = [candle(index * 300_000) for index in range(120)]
+
+    result = to_chart_candles(candles)
+
+    assert len(result) == 80
+    assert result[0].timestamp == 40 * 300_000
+
+
+def test_analyze_symbol_exposes_range_and_trend_chart_zones() -> None:
+    candles = bullish_then_flat_candles()
+    ticker = Ticker(symbol="TESTUSDT", last_price=100.62, turnover_24h_usd=3_000_000)
+
+    result = analyze_symbol(ticker, candles, tick_size=0.01, min_rating=0, include_neutral=True, now_ms=candles[-1].timestamp + 300_000)
+
+    assert result is not None
+    assert len(result.chart_candles) <= 80
+    assert result.trend_start_timestamp <= result.trend_end_timestamp < result.range_start_timestamp <= result.range_end_timestamp
+    assert result.range_candles == 18
