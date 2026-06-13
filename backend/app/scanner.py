@@ -1,0 +1,120 @@
+from __future__ import annotations
+
+import asyncio
+import time
+from datetime import datetime, timezone
+from typing import Optional
+
+from .analysis import analyze_symbol
+from .bybit_client import BybitClient
+from .config import config
+from .models import ScanRequest, ScanResponse, ScanResult
+
+
+class ScannerService:
+    def __init__(self, bybit: BybitClient) -> None:
+        self.bybit = bybit
+        self._cache: Optional[ScanResponse] = None
+        self._cache_key: Optional[tuple[int, bool, int, float]] = None
+        self._cache_created_monotonic: float = 0
+        self._scan_lock = asyncio.Lock()
+
+    def _request_key(self, request: ScanRequest) -> tuple[int, bool, int, float]:
+        return (request.min_rating, request.include_neutral, request.max_results, request.turnover_24h_min)
+
+    def _fresh_cache(self, request: ScanRequest) -> bool:
+        return (
+            self._cache is not None
+            and self._cache_key == self._request_key(request)
+            and time.monotonic() - self._cache_created_monotonic < config.cache_ttl_seconds
+        )
+
+    async def scan(self, request: ScanRequest) -> ScanResponse:
+        if not request.force and self._fresh_cache(request):
+            cached = self._cache.model_copy(deep=True)
+            cached.from_cache = True
+            return cached
+
+        async with self._scan_lock:
+            if not request.force and self._fresh_cache(request):
+                cached = self._cache.model_copy(deep=True)
+                cached.from_cache = True
+                return cached
+            response = await self._run_scan(request)
+            self._cache = response.model_copy(deep=True)
+            self._cache_key = self._request_key(request)
+            self._cache_created_monotonic = time.monotonic()
+            return response
+
+    def _apply_response_filters(self, results: list[ScanResult], request: ScanRequest) -> list[ScanResult]:
+        filtered = [
+            result
+            for result in results
+            if result.rating >= request.min_rating
+            and result.turnover_24h_usd >= request.turnover_24h_min
+            and (request.include_neutral or result.direction != "NEUTRAL")
+        ]
+        return sorted(filtered, key=lambda result: result.rating, reverse=True)[: request.max_results]
+
+    async def _run_scan(self, request: ScanRequest) -> ScanResponse:
+        started = time.perf_counter()
+        scan_time = datetime.now(timezone.utc).isoformat()
+        instruments, tickers = await asyncio.gather(self.bybit.instruments(), self.bybit.tickers())
+        eligible_instruments = [
+            instrument
+            for instrument in instruments
+            if instrument.status == "Trading"
+            and instrument.contract_type == "LinearPerpetual"
+            and instrument.quote_coin == "USDT"
+            and instrument.symbol in tickers
+            and tickers[instrument.symbol].turnover_24h_usd >= request.turnover_24h_min
+        ]
+        eligible_instruments.sort(key=lambda instrument: tickers[instrument.symbol].turnover_24h_usd, reverse=True)
+
+        semaphore = asyncio.Semaphore(config.max_concurrent_requests)
+        errors = 0
+        analyzed = 0
+        results: list[ScanResult] = []
+        now_ms = int(time.time() * 1000)
+
+        async def process(instrument_index: int, symbol: str, tick_size: float) -> Optional[ScanResult]:
+            nonlocal errors, analyzed
+            if instrument_index and instrument_index % config.max_concurrent_requests == 0:
+                await asyncio.sleep(config.delay_between_batches_ms / 1000)
+            async with semaphore:
+                try:
+                    candles = await self.bybit.klines(symbol)
+                    analyzed += 1
+                    return analyze_symbol(
+                        tickers[symbol],
+                        candles,
+                        tick_size,
+                        min_rating=request.min_rating,
+                        include_neutral=request.include_neutral,
+                        now_ms=now_ms,
+                    )
+                except Exception:
+                    errors += 1
+                    return None
+
+        tasks = [
+            process(index, instrument.symbol, instrument.tick_size)
+            for index, instrument in enumerate(eligible_instruments)
+        ]
+        for result in await asyncio.gather(*tasks):
+            if result is not None:
+                results.append(result)
+
+        filtered_results = self._apply_response_filters(results, request)
+        duration_ms = round((time.perf_counter() - started) * 1000)
+        return ScanResponse(
+            scan_time=scan_time,
+            scan_duration_ms=duration_ms,
+            total_symbols=len(instruments),
+            filtered_symbols=len(eligible_instruments),
+            analyzed_symbols=analyzed,
+            symbols_with_errors=errors,
+            signals_found=len(filtered_results),
+            from_cache=False,
+            results=filtered_results,
+        )
