@@ -11,7 +11,7 @@ from backend.app.analysis import (
     sideways_metrics,
     to_chart_candles,
 )
-from backend.app.models import Candle, ScanResult, Ticker
+from backend.app.models import Candle, ScanRequest, ScanResult, Ticker
 
 
 def candle(timestamp: int, open_price: float = 100, high: float = 101, low: float = 99, close: float = 100) -> Candle:
@@ -182,6 +182,12 @@ def test_scan_result_schema_exposes_flat_diagnostics_and_no_spread() -> None:
     assert "chart_candles" in fields
     assert "range_start_timestamp" in fields
     assert "trend_start_timestamp" in fields
+
+
+def test_scan_request_includes_neutral_by_default() -> None:
+    request = ScanRequest()
+
+    assert request.include_neutral is True
 
 
 def test_chart_candles_are_limited_to_80() -> None:

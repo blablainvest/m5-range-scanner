@@ -98,7 +98,6 @@ function App() {
   const [sortKey, setSortKey] = React.useState<SortKey>("rating");
   const [sortDirection, setSortDirection] = React.useState<SortDirection>("desc");
   const [minRating, setMinRating] = React.useState(70);
-  const [includeNeutral, setIncludeNeutral] = React.useState(false);
   const [turnoverMin, setTurnoverMin] = React.useState(2_000_000);
   const [expandedTicker, setExpandedTicker] = React.useState<string | null>(null);
   const [chartTicker, setChartTicker] = React.useState<string | null>(null);
@@ -115,7 +114,6 @@ function App() {
         body: JSON.stringify({
           force,
           min_rating: minRating,
-          include_neutral: includeNeutral,
           max_results: 80,
           turnover_24h_min: turnoverMin
         })
@@ -175,16 +173,12 @@ function App() {
 
       <section className="controls" aria-label="Фильтры">
         <label>
-          Min rating
+          Минимальный скоринг
           <input type="number" min="0" max="100" value={minRating} onChange={(event) => setMinRating(Number(event.target.value))} />
         </label>
         <label>
-          24h turnover min
+          24ч Объем
           <input type="number" min="0" step="100000" value={turnoverMin} onChange={(event) => setTurnoverMin(Number(event.target.value))} />
-        </label>
-        <label className="toggle">
-          <input type="checkbox" checked={includeNeutral} onChange={(event) => setIncludeNeutral(event.target.checked)} />
-          Include neutral
         </label>
       </section>
 

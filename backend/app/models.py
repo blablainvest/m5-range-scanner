@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class ScanRequest(BaseModel):
     force: bool = False
     min_rating: int = Field(default=70, ge=0, le=100)
-    include_neutral: bool = False
+    include_neutral: bool = True
     max_results: int = Field(default=50, ge=1, le=200)
     turnover_24h_min: float = Field(default=2_000_000, ge=0)
 
