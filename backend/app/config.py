@@ -28,7 +28,7 @@ class ScannerConfig(BaseModel):
     close_inside_ratio_min: float = 0.75
     body_inside_ratio_min: float = 0.60
     touch_zone_ratio: float = 0.2
-    independent_touch_min_gap: int = 2
+    independent_touch_outside_candles: int = 2
 
 
 config = ScannerConfig()

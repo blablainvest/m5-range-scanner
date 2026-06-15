@@ -64,6 +64,8 @@ class ScanResult(BaseModel):
     setup_class: str = Field(alias="class")
     setup_status: str
     direction: str
+    direction_candidate: str
+    direction_confirmation: str
     range_candles: int
     range_minutes: int
     range_width_pct: float

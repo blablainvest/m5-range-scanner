@@ -31,6 +31,8 @@ class RangeCandidate:
     candles: list[Candle]
     score: int
     direction: str
+    direction_candidate: str
+    direction_confirmation: str
     setup_status: str
     prev_trend: str
     squeeze_score: int
@@ -107,21 +109,31 @@ def count_independent_zone_touches(candles: list[Candle], support: float, resist
     width = resistance - support
     if width <= 0:
         return 0
-    min_gap = config.independent_touch_min_gap
-    last_counted_index: Optional[int] = None
+
+    outside_required = config.independent_touch_outside_candles
     touches = 0
+    armed = True
+    outside_count = 0
     upper_boundary = resistance - width * config.touch_zone_ratio
     lower_boundary = support + width * config.touch_zone_ratio
-    for index, candle in enumerate(candles):
+    for candle in candles:
         if side == "resistance":
             touched = candle.high >= upper_boundary
         elif side == "support":
             touched = candle.low <= lower_boundary
         else:
             raise ValueError(f"unknown touch side: {side}")
-        if touched and (last_counted_index is None or index - last_counted_index >= min_gap):
-            touches += 1
-            last_counted_index = index
+
+        if touched:
+            if armed:
+                touches += 1
+                armed = False
+            outside_count = 0
+            continue
+
+        outside_count += 1
+        if outside_count >= outside_required:
+            armed = True
     return touches
 
 
@@ -162,11 +174,11 @@ def linear_regression_metrics(values: list[float]) -> tuple[float, float]:
 def adx_14(candles: list[Candle], period: int = 14) -> float:
     if len(candles) < period + 1:
         return 100.0
-    recent = candles[-(period + 1) :]
+
     true_ranges: list[float] = []
     plus_dm: list[float] = []
     minus_dm: list[float] = []
-    for previous, current in zip(recent, recent[1:]):
+    for previous, current in zip(candles, candles[1:]):
         high_move = current.high - previous.high
         low_move = previous.low - current.low
         plus_dm.append(high_move if high_move > low_move and high_move > 0 else 0.0)
@@ -178,15 +190,35 @@ def adx_14(candles: list[Candle], period: int = 14) -> float:
                 abs(current.low - previous.close),
             )
         )
-    tr_sum = sum(true_ranges)
-    if tr_sum <= 0:
+
+    smoothed_tr = sum(true_ranges[:period])
+    smoothed_plus_dm = sum(plus_dm[:period])
+    smoothed_minus_dm = sum(minus_dm[:period])
+
+    def directional_index(tr_value: float, plus_value: float, minus_value: float) -> float:
+        if tr_value <= 0:
+            return 0.0
+        plus_di = 100 * plus_value / tr_value
+        minus_di = 100 * minus_value / tr_value
+        di_sum = plus_di + minus_di
+        return 100 * abs(plus_di - minus_di) / di_sum if di_sum > 0 else 0.0
+
+    dx_values = [directional_index(smoothed_tr, smoothed_plus_dm, smoothed_minus_dm)]
+    for index in range(period, len(true_ranges)):
+        smoothed_tr = smoothed_tr - smoothed_tr / period + true_ranges[index]
+        smoothed_plus_dm = smoothed_plus_dm - smoothed_plus_dm / period + plus_dm[index]
+        smoothed_minus_dm = smoothed_minus_dm - smoothed_minus_dm / period + minus_dm[index]
+        dx_values.append(directional_index(smoothed_tr, smoothed_plus_dm, smoothed_minus_dm))
+
+    if not dx_values:
         return 0.0
-    plus_di = 100 * sum(plus_dm) / tr_sum
-    minus_di = 100 * sum(minus_dm) / tr_sum
-    di_sum = plus_di + minus_di
-    if di_sum <= 0:
-        return 0.0
-    return 100 * abs(plus_di - minus_di) / di_sum
+    if len(dx_values) < period:
+        return mean(dx_values)
+
+    adx = mean(dx_values[:period])
+    for dx_value in dx_values[period:]:
+        adx = ((adx * (period - 1)) + dx_value) / period
+    return adx
 
 
 def inside_ratios(candles: list[Candle], support: float, resistance: float) -> tuple[float, float]:
@@ -475,6 +507,21 @@ def direction_from_trend(position: float, trend: str) -> tuple[str, str, str]:
     return "NEUTRAL", "range_only", "neutral"
 
 
+def confirm_direction(direction_candidate: str, squeeze: int, volume_ratio: float) -> tuple[str, str]:
+    if direction_candidate == "NEUTRAL":
+        return "NEUTRAL", "not_applicable"
+
+    weak_squeeze = squeeze < 45
+    weak_volume = volume_ratio < 1.0
+    if weak_squeeze and weak_volume:
+        return "NEUTRAL", "weak_squeeze_and_volume"
+    if weak_squeeze:
+        return "NEUTRAL", "weak_squeeze"
+    if weak_volume:
+        return "NEUTRAL", "weak_volume"
+    return direction_candidate, "confirmed"
+
+
 def analyze_symbol(
     ticker: Ticker,
     candles: list[Candle],
@@ -528,18 +575,12 @@ def analyze_symbol(
                 trend_start_index = max(0, range_start_index - 50)
                 trend_end_index = max(trend_start_index, range_start_index - 1)
                 trend = previous_trend(prior)
-                direction, status, trend_alignment = direction_from_trend(position, trend)
-                squeeze = squeeze_score(window_candles, support, resistance, direction, tick_size)
+                direction_candidate, status, trend_alignment = direction_from_trend(position, trend)
+                squeeze = squeeze_score(window_candles, support, resistance, direction_candidate, tick_size)
                 turnover_1h, range_avg, prev_avg, vol_ratio = turnover_metrics(closed, range_start_index, window_candles)
-
-                if direction == "LONG" and (squeeze < 45 or vol_ratio < 1.0):
-                    direction = "NEUTRAL"
+                direction, direction_confirmation = confirm_direction(direction_candidate, squeeze, vol_ratio)
+                if direction_candidate != "NEUTRAL" and direction_confirmation != "confirmed":
                     status = "range_only"
-                    trend_alignment = "neutral"
-                if direction == "SHORT" and (squeeze < 45 or vol_ratio < 1.0):
-                    direction = "NEUTRAL"
-                    status = "range_only"
-                    trend_alignment = "neutral"
                 if direction != "NEUTRAL" and squeeze >= 60 and vol_ratio >= 1.2:
                     status = "breakout_watch"
 
@@ -569,7 +610,9 @@ def analyze_symbol(
                     f"previous trend: {trend}",
                 ]
                 if trend_alignment == "aligned":
-                    reasons.append(f"trend aligned: {trend} -> {direction}")
+                    reasons.append(f"trend aligned: {trend} -> {direction_candidate}")
+                if direction_confirmation == "confirmed":
+                    reasons.append("direction confirmed by squeeze and turnover")
                 if position >= 0.75:
                     reasons.append("price near resistance")
                 elif position <= 0.25:
@@ -586,6 +629,12 @@ def analyze_symbol(
                     warnings.append("previous trend is neutral")
                 if direction == "NEUTRAL":
                     warnings.append("direction is neutral")
+                if direction_confirmation == "weak_squeeze":
+                    warnings.append("direction candidate has weak squeeze")
+                elif direction_confirmation == "weak_volume":
+                    warnings.append("direction candidate has weak turnover")
+                elif direction_confirmation == "weak_squeeze_and_volume":
+                    warnings.append("direction candidate has weak squeeze and turnover")
                 if false_breakouts:
                     warnings.append(f"false breakouts: {false_breakouts}")
                 if metrics.adx_14 >= config.sideways_adx_max:
@@ -614,6 +663,8 @@ def analyze_symbol(
                         candles=window_candles,
                         score=rating,
                         direction=direction,
+                        direction_candidate=direction_candidate,
+                        direction_confirmation=direction_confirmation,
                         setup_status=status,
                         prev_trend=trend,
                         squeeze_score=squeeze,
@@ -670,6 +721,8 @@ def analyze_symbol(
         setup_class=setup_class(best.score),
         setup_status=best.setup_status,
         direction=best.direction,
+        direction_candidate=best.direction_candidate,
+        direction_confirmation=best.direction_confirmation,
         range_candles=best.window,
         range_minutes=best.window * 5,
         range_width_pct=best.width_pct,

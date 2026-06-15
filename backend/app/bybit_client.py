@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+import logging
 from typing import Any
+from typing import Optional
 
 import httpx
 
@@ -12,6 +13,9 @@ from .models import Candle, Instrument, Ticker
 
 class BybitError(RuntimeError):
     pass
+
+
+logger = logging.getLogger(__name__)
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -33,11 +37,12 @@ def _to_int(value: Any) -> Optional[int]:
 
 
 class BybitClient:
-    def __init__(self) -> None:
+    def __init__(self, transport: Optional[httpx.AsyncBaseTransport] = None) -> None:
         self._client = httpx.AsyncClient(
             base_url=config.bybit_base_url,
             timeout=config.request_timeout_seconds,
-            headers={"User-Agent": "m5-range-scanner/0.1"},
+            headers={"User-Agent": "m5-range-scanner/0.1.1"},
+            transport=transport,
         )
 
     async def close(self) -> None:
@@ -56,7 +61,20 @@ class BybitClient:
             except (httpx.HTTPError, ValueError, KeyError, BybitError) as exc:
                 last_error = exc
                 if attempt < config.retry_attempts - 1:
+                    logger.warning(
+                        "bybit_retry endpoint=%s attempt=%s max_attempts=%s error=%s",
+                        path,
+                        attempt + 1,
+                        config.retry_attempts,
+                        exc,
+                    )
                     await asyncio.sleep((config.retry_backoff_ms / 1000) * (attempt + 1))
+        logger.error(
+            "bybit_request_failed endpoint=%s attempts=%s error=%s",
+            path,
+            config.retry_attempts,
+            last_error,
+        )
         raise BybitError(str(last_error) if last_error else "unknown Bybit error")
 
     async def instruments(self) -> list[Instrument]:

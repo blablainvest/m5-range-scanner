@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -e ".[test]"
+      - run: python -m pytest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+  containers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose build
+      - run: docker compose up -d
+      - name: Smoke test
+        run: |
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8000/api/health; then
+              break
+            fi
+            sleep 2
+          done
+          curl --fail --silent http://127.0.0.1:5173/ > /dev/null
+          curl --fail --silent --max-time 60 \
+            -X POST http://127.0.0.1:5173/api/scan \
+            -H "Content-Type: application/json" \
+            -d '{"min_rating":70,"turnover_24h_min":1000000000000000,"max_results":1}' \
+            > /dev/null
+      - if: always()
+        run: docker compose logs && docker compose down -v

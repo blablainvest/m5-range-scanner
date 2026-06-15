@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -8,6 +9,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from .bybit_client import BybitClient
 from .models import ScanRequest, ScanResponse
 from .scanner import ScannerService
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s level=%(levelname)s logger=%(name)s message=%(message)s",
+)
 
 
 @asynccontextmanager
@@ -20,7 +27,7 @@ async def lifespan(app: FastAPI):
         await bybit.close()
 
 
-app = FastAPI(title="M5 Range Scanner", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="M5 Range Scanner", version="0.1.1", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

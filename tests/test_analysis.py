@@ -2,6 +2,7 @@ from backend.app.analysis import (
     analyze_symbol,
     adx_14,
     closed_candles,
+    confirm_direction,
     count_independent_zone_touches,
     direction_from_trend,
     is_valid_sideways,
@@ -80,11 +81,25 @@ def test_independent_zone_touches_collapse_consecutive_candles() -> None:
         candle(300_000, high=101.0, low=99.8),
         candle(600_000, high=100.95, low=99.9),
         candle(900_000, high=100.1, low=99.0),
-        candle(1_200_000, high=100.92, low=99.6),
+        candle(1_200_000, high=100.2, low=99.6),
+        candle(1_500_000, high=100.92, low=99.6),
     ]
 
-    assert count_independent_zone_touches(candles, support=99, resistance=101, side="resistance") == 3
-    assert count_independent_zone_touches(candles[:3], support=99, resistance=101, side="resistance") == 2
+    assert count_independent_zone_touches(candles, support=99, resistance=101, side="resistance") == 2
+    assert count_independent_zone_touches(candles[:3], support=99, resistance=101, side="resistance") == 1
+
+
+def test_touch_requires_two_full_candles_outside_zone_before_reentry() -> None:
+    candles = [
+        candle(0, high=101.0),
+        candle(300_000, high=100.1),
+        candle(600_000, high=100.9),
+        candle(900_000, high=100.1),
+        candle(1_200_000, high=100.1),
+        candle(1_500_000, high=100.9),
+    ]
+
+    assert count_independent_zone_touches(candles, support=99, resistance=101, side="resistance") == 2
 
 
 def test_sideways_metrics_accept_horizontal_flat() -> None:
@@ -105,10 +120,10 @@ def test_sideways_metrics_reject_trending_window_by_r_squared_or_slope() -> None
     assert not is_valid_sideways(metrics)
 
 
-def test_adx_is_available_for_scoring_not_hard_filter() -> None:
-    candles = trending_candles(24)
+def test_adx_uses_wilder_smoothing_and_is_available_for_scoring() -> None:
+    candles = trending_candles(40)
 
-    assert adx_14(candles) >= 25
+    assert adx_14(candles) == 100.0
 
 
 def test_direction_requires_trend_alignment() -> None:
@@ -116,6 +131,14 @@ def test_direction_requires_trend_alignment() -> None:
     assert direction_from_trend(0.1, "bearish") == ("SHORT", "near_support", "aligned")
     assert direction_from_trend(0.1, "bullish") == ("NEUTRAL", "trend_mismatch", "mismatch")
     assert direction_from_trend(0.9, "bearish") == ("NEUTRAL", "trend_mismatch", "mismatch")
+
+
+def test_direction_confirmation_keeps_candidate_separate_from_final_direction() -> None:
+    assert confirm_direction("LONG", squeeze=70, volume_ratio=1.2) == ("LONG", "confirmed")
+    assert confirm_direction("LONG", squeeze=40, volume_ratio=1.2) == ("NEUTRAL", "weak_squeeze")
+    assert confirm_direction("SHORT", squeeze=70, volume_ratio=0.8) == ("NEUTRAL", "weak_volume")
+    assert confirm_direction("SHORT", squeeze=20, volume_ratio=0.8) == ("NEUTRAL", "weak_squeeze_and_volume")
+    assert confirm_direction("NEUTRAL", squeeze=0, volume_ratio=0.0) == ("NEUTRAL", "not_applicable")
 
 
 def test_setup_class_thresholds() -> None:
@@ -182,6 +205,8 @@ def test_scan_result_schema_exposes_flat_diagnostics_and_no_spread() -> None:
     assert "chart_candles" in fields
     assert "range_start_timestamp" in fields
     assert "trend_start_timestamp" in fields
+    assert "direction_candidate" in fields
+    assert "direction_confirmation" in fields
 
 
 def test_scan_request_includes_neutral_by_default() -> None:
@@ -209,3 +234,28 @@ def test_analyze_symbol_exposes_range_and_trend_chart_zones() -> None:
     assert len(result.chart_candles) <= 80
     assert result.trend_start_timestamp <= result.trend_end_timestamp < result.range_start_timestamp <= result.range_end_timestamp
     assert result.range_candles == 18
+
+
+def test_analyze_symbol_preserves_aligned_trend_when_confirmation_is_weak() -> None:
+    candles = bullish_then_flat_candles()
+    for item in candles[:50]:
+        item.turnover = 20_000
+    for item in candles[50:]:
+        item.turnover = 5_000
+    ticker = Ticker(symbol="TESTUSDT", last_price=100.62, turnover_24h_usd=3_000_000)
+
+    result = analyze_symbol(
+        ticker,
+        candles,
+        tick_size=0.01,
+        min_rating=0,
+        include_neutral=True,
+        now_ms=candles[-1].timestamp + 300_000,
+    )
+
+    assert result is not None
+    assert result.direction_candidate == "LONG"
+    assert result.direction == "NEUTRAL"
+    assert result.trend_alignment == "aligned"
+    assert result.direction_confirmation in {"weak_volume", "weak_squeeze_and_volume"}
+    assert "previous trend is neutral" not in result.warnings

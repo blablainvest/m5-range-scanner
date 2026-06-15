@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from datetime import datetime, timezone
 from typing import Optional
@@ -9,6 +10,9 @@ from .analysis import analyze_symbol
 from .bybit_client import BybitClient
 from .config import config
 from .models import ScanRequest, ScanResponse, ScanResult
+
+
+logger = logging.getLogger(__name__)
 
 
 class ScannerService:
@@ -59,6 +63,13 @@ class ScannerService:
     async def _run_scan(self, request: ScanRequest) -> ScanResponse:
         started = time.perf_counter()
         scan_time = datetime.now(timezone.utc).isoformat()
+        logger.info(
+            "scan_started min_rating=%s turnover_24h_min=%s max_results=%s force=%s",
+            request.min_rating,
+            request.turnover_24h_min,
+            request.max_results,
+            request.force,
+        )
         instruments, tickers = await asyncio.gather(self.bybit.instruments(), self.bybit.tickers())
         eligible_instruments = [
             instrument
@@ -95,6 +106,7 @@ class ScannerService:
                     )
                 except Exception:
                     errors += 1
+                    logger.exception("symbol_analysis_failed symbol=%s endpoint=/v5/market/kline", symbol)
                     return None
 
         tasks = [
@@ -107,7 +119,7 @@ class ScannerService:
 
         filtered_results = self._apply_response_filters(results, request)
         duration_ms = round((time.perf_counter() - started) * 1000)
-        return ScanResponse(
+        response = ScanResponse(
             scan_time=scan_time,
             scan_duration_ms=duration_ms,
             total_symbols=len(instruments),
@@ -118,3 +130,13 @@ class ScannerService:
             from_cache=False,
             results=filtered_results,
         )
+        logger.info(
+            "scan_completed duration_ms=%s total_symbols=%s filtered_symbols=%s analyzed_symbols=%s errors=%s signals=%s",
+            duration_ms,
+            len(instruments),
+            len(eligible_instruments),
+            analyzed,
+            errors,
+            len(filtered_results),
+        )
+        return response
