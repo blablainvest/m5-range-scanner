@@ -2,6 +2,7 @@ import React from "react";
 import { ArrowDown, ArrowUp, ExternalLink, RefreshCw, Search } from "lucide-react";
 
 type Direction = "LONG" | "SHORT" | "NEUTRAL";
+type SetupClass = "A+" | "A" | "B" | "C" | "Weak";
 type SortKey = "ticker" | "rating" | "turnover_24h_usd" | "price_position" | "volume_ratio" | "range_width_pct" | "sideways_confidence";
 type SortDirection = "asc" | "desc";
 
@@ -13,11 +14,20 @@ type ScanResult = {
   turnover_24h_usd: number;
   turnover_1h_usd: number;
   rating: number;
-  class: string;
+  class: SetupClass;
   setup_status: string;
   direction: Direction;
   direction_candidate: Direction;
   direction_confirmation: string;
+  btc_correlation_5h: number | null;
+  btc_correlation_pairs: number;
+  btc_change_pct_5h: number | null;
+  asset_change_pct_5h: number | null;
+  relative_strength_pct: number | null;
+  btc_trend: string;
+  btc_signal: string;
+  btc_score_adjustment: number;
+  rating_with_btc_preview: number;
   range_candles: number;
   range_minutes: number;
   range_width_pct: number;
@@ -76,6 +86,18 @@ const compactFormatter = new Intl.NumberFormat("en-US", {
   notation: "compact",
   maximumFractionDigits: 2
 });
+const allDirections: Direction[] = ["LONG", "SHORT", "NEUTRAL"];
+const allClasses: SetupClass[] = ["A+", "A", "B", "C", "Weak"];
+const btcSignalLabels: Record<string, string> = {
+  own_strength: "Own strength",
+  own_weakness: "Own weakness",
+  btc_confirmed: "BTC confirms",
+  btc_driven: "BTC-driven",
+  independent: "Independent",
+  btc_headwind: "BTC headwind",
+  mixed: "Mixed",
+  insufficient: "Insufficient"
+};
 
 function formatUsd(value: number) {
   return `$${compactFormatter.format(value)}`;
@@ -83,6 +105,14 @@ function formatUsd(value: number) {
 
 function formatNumber(value: number, digits = 2) {
   return numberFormatter.format(Number(value.toFixed(digits)));
+}
+
+function formatOptionalNumber(value: number | null, digits = 2) {
+  return value === null ? "—" : formatNumber(value, digits);
+}
+
+function formatSigned(value: number) {
+  return `${value > 0 ? "+" : ""}${value}`;
 }
 
 function classNameForDirection(direction: Direction) {
@@ -99,6 +129,8 @@ export function App() {
   const [sortDirection, setSortDirection] = React.useState<SortDirection>("desc");
   const [minRating, setMinRating] = React.useState(70);
   const [turnoverMin, setTurnoverMin] = React.useState(2_000_000);
+  const [directionFilters, setDirectionFilters] = React.useState<Direction[]>(allDirections);
+  const [classFilters, setClassFilters] = React.useState<SetupClass[]>(allClasses);
   const [expandedTicker, setExpandedTicker] = React.useState<string | null>(null);
   const [chartTicker, setChartTicker] = React.useState<string | null>(null);
 
@@ -139,9 +171,36 @@ export function App() {
     setSortDirection(nextKey === "ticker" ? "asc" : "desc");
   }
 
-  const sortedResults = React.useMemo(() => {
+  function toggleDirection(direction: Direction) {
+    setDirectionFilters((current) => (
+      current.includes(direction)
+        ? current.filter((item) => item !== direction)
+        : [...current, direction]
+    ));
+  }
+
+  function toggleClass(setupClass: SetupClass) {
+    setClassFilters((current) => (
+      current.includes(setupClass)
+        ? current.filter((item) => item !== setupClass)
+        : [...current, setupClass]
+    ));
+  }
+
+  function resetLocalFilters() {
+    setDirectionFilters(allDirections);
+    setClassFilters(allClasses);
+  }
+
+  const filteredResults = React.useMemo(() => {
     const results = data?.results ?? [];
-    return [...results].sort((a, b) => {
+    return results.filter(
+      (result) => directionFilters.includes(result.direction) && classFilters.includes(result.class)
+    );
+  }, [classFilters, data, directionFilters]);
+
+  const sortedResults = React.useMemo(() => {
+    return [...filteredResults].sort((a, b) => {
       const aValue = a[sortKey];
       const bValue = b[sortKey];
       const comparison =
@@ -150,7 +209,7 @@ export function App() {
           : Number(aValue) - Number(bValue);
       return sortDirection === "asc" ? comparison : -comparison;
     });
-  }, [data, sortDirection, sortKey]);
+  }, [filteredResults, sortDirection, sortKey]);
 
   return (
     <main className="app-shell">
@@ -180,6 +239,22 @@ export function App() {
           24ч Объем
           <input type="number" min="0" step="100000" value={turnoverMin} onChange={(event) => setTurnoverMin(Number(event.target.value))} />
         </label>
+        <FilterGroup
+          label="Direction"
+          values={allDirections}
+          selected={directionFilters}
+          onToggle={toggleDirection}
+        />
+        <FilterGroup
+          label="Class"
+          values={allClasses}
+          selected={classFilters}
+          onToggle={toggleClass}
+        />
+        <button className="reset-filters" onClick={resetLocalFilters} type="button">
+          <RefreshCw size={14} />
+          Сбросить
+        </button>
       </section>
 
       <section className="status-line" aria-live="polite">
@@ -188,7 +263,7 @@ export function App() {
         {loading && <span>Загрузка инструментов, свечей и расчет setup...</span>}
         {data && !loading && (
           <span>
-            {data.from_cache ? "Данные из кэша" : "Новое сканирование"}: {data.signals_found} setup, analyzed {data.analyzed_symbols} / filtered {data.filtered_symbols}, {formatNumber(data.scan_duration_ms / 1000, 1)} sec.
+            {data.from_cache ? "Данные из кэша" : "Новое сканирование"}: показано {filteredResults.length} из {data.results.length}, analyzed {data.analyzed_symbols} / filtered {data.filtered_symbols}, {formatNumber(data.scan_duration_ms / 1000, 1)} sec.
           </span>
         )}
       </section>
@@ -207,6 +282,8 @@ export function App() {
               <SortableHeader label="Flat" active={sortKey === "sideways_confidence"} direction={sortDirection} onClick={() => updateSort("sideways_confidence")} />
               <SortableHeader label="Volume Ratio" active={sortKey === "volume_ratio"} direction={sortDirection} onClick={() => updateSort("volume_ratio")} />
               <SortableHeader label="Range Width" active={sortKey === "range_width_pct"} direction={sortDirection} onClick={() => updateSort("range_width_pct")} />
+              <th>BTC Context</th>
+              <th>BTC Preview</th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -230,6 +307,20 @@ export function App() {
                   <td className="numeric">{formatNumber(result.volume_ratio, 2)}x</td>
                   <td className="numeric">{formatNumber(result.range_width_pct, 2)}%</td>
                   <td>
+                    <div className={`btc-context ${result.btc_signal}`}>
+                      <span>{btcSignalLabels[result.btc_signal] ?? result.btc_signal}</span>
+                      <small>
+                        corr {formatOptionalNumber(result.btc_correlation_5h, 2)} · rel {formatOptionalNumber(result.relative_strength_pct, 2)}%
+                      </small>
+                    </div>
+                  </td>
+                  <td className="numeric">
+                    {result.rating_with_btc_preview}
+                    <span className={`score-adjustment ${result.btc_score_adjustment < 0 ? "negative" : ""}`}>
+                      {formatSigned(result.btc_score_adjustment)}
+                    </span>
+                  </td>
+                  <td>
                     <button
                       className="chart-button"
                       onClick={(event) => {
@@ -244,14 +335,14 @@ export function App() {
                 </tr>
                 {chartTicker === result.ticker && (
                   <tr className="chart-row">
-                    <td colSpan={11}>
+                    <td colSpan={13}>
                       <SetupChart result={result} />
                     </td>
                   </tr>
                 )}
                 {expandedTicker === result.ticker && (
                   <tr className="details-row">
-                    <td colSpan={11}>
+                    <td colSpan={13}>
                       <div className="details-grid">
                         <Metric label="Support" value={formatNumber(result.support_level, 8)} />
                         <Metric label="Resistance" value={formatNumber(result.resistance_level, 8)} />
@@ -268,6 +359,12 @@ export function App() {
                         <Metric label="Slope" value={formatNumber(result.flat_slope_rel, 5)} />
                         <Metric label="Inside close/body" value={`${formatNumber(result.close_inside_ratio, 2)} / ${formatNumber(result.body_inside_ratio, 2)}`} />
                         <Metric label="False breakouts" value={String(result.false_breakouts)} />
+                        <Metric label="BTC correlation" value={formatOptionalNumber(result.btc_correlation_5h, 3)} />
+                        <Metric label="BTC pairs" value={String(result.btc_correlation_pairs)} />
+                        <Metric label="BTC / Asset 5h" value={`${formatOptionalNumber(result.btc_change_pct_5h, 2)}% / ${formatOptionalNumber(result.asset_change_pct_5h, 2)}%`} />
+                        <Metric label="Relative BTC" value={`${formatOptionalNumber(result.relative_strength_pct, 2)}%`} />
+                        <Metric label="BTC signal" value={btcSignalLabels[result.btc_signal] ?? result.btc_signal} />
+                        <Metric label="Rating preview" value={`${result.rating} -> ${result.rating_with_btc_preview} (${formatSigned(result.btc_score_adjustment)})`} />
                       </div>
                       <div className="reason-columns">
                         <ListBlock title="Reasons" items={result.reasons} />
@@ -280,7 +377,7 @@ export function App() {
             ))}
             {!loading && sortedResults.length === 0 && (
               <tr>
-                <td colSpan={11} className="empty-state">
+                <td colSpan={13} className="empty-state">
                   {data ? "Setup не найдены с текущими фильтрами." : "Результаты появятся здесь после сканирования."}
                 </td>
               </tr>
@@ -404,10 +501,45 @@ export function SetupChart({ result }: { result: ScanResult }) {
         <Metric label="Inside close/body" value={`${formatNumber(result.close_inside_ratio, 2)} / ${formatNumber(result.body_inside_ratio, 2)}`} />
         <Metric label="False breakouts" value={String(result.false_breakouts)} />
         <Metric label="Range candles" value={String(result.range_candles)} />
+        <Metric label="BTC correlation" value={formatOptionalNumber(result.btc_correlation_5h, 3)} />
+        <Metric label="Relative BTC" value={`${formatOptionalNumber(result.relative_strength_pct, 2)}%`} />
+        <Metric label="BTC signal" value={btcSignalLabels[result.btc_signal] ?? result.btc_signal} />
+        <Metric label="Rating preview" value={`${result.rating} -> ${result.rating_with_btc_preview}`} />
       </div>
       <div className="reason-columns">
         <ListBlock title="Reasons" items={result.reasons} />
         <ListBlock title="Warnings" items={result.warnings.length ? result.warnings : ["no warnings"]} />
+      </div>
+    </div>
+  );
+}
+
+function FilterGroup<T extends string>({
+  label,
+  values,
+  selected,
+  onToggle
+}: {
+  label: string;
+  values: T[];
+  selected: T[];
+  onToggle: (value: T) => void;
+}) {
+  return (
+    <div className="filter-group" aria-label={label}>
+      <span>{label}</span>
+      <div className="filter-options">
+        {values.map((value) => (
+          <button
+            key={value}
+            type="button"
+            className="filter-chip"
+            aria-pressed={selected.includes(value)}
+            onClick={() => onToggle(value)}
+          >
+            {value}
+          </button>
+        ))}
       </div>
     </div>
   );

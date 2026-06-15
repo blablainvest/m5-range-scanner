@@ -41,7 +41,7 @@ class BybitClient:
         self._client = httpx.AsyncClient(
             base_url=config.bybit_base_url,
             timeout=config.request_timeout_seconds,
-            headers={"User-Agent": "m5-range-scanner/0.1.1"},
+            headers={"User-Agent": "m5-range-scanner/0.2.0"},
             transport=transport,
         )
 

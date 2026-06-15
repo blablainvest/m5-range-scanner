@@ -18,6 +18,15 @@ function result(overrides: Record<string, unknown> = {}) {
     direction: "LONG",
     direction_candidate: "LONG",
     direction_confirmation: "confirmed",
+    btc_correlation_5h: 0.72,
+    btc_correlation_pairs: 60,
+    btc_change_pct_5h: 1.2,
+    asset_change_pct_5h: 2,
+    relative_strength_pct: 0.8,
+    btc_trend: "bullish",
+    btc_signal: "btc_confirmed",
+    btc_score_adjustment: 3,
+    rating_with_btc_preview: 83,
     range_candles: 18,
     range_minutes: 90,
     range_width_pct: 1,
@@ -117,9 +126,9 @@ describe("App", () => {
     await screen.findByText("HIGHUSDT");
     const rowsDescending = screen.getAllByRole("row").slice(1);
     expect(within(rowsDescending[0]).getByText("HIGHUSDT")).toBeInTheDocument();
-    expect(screen.getByText("LONG")).toHaveClass("long");
-    expect(screen.getByText("SHORT")).toHaveClass("short");
-    expect(screen.getByText("NEUTRAL")).toHaveClass("neutral");
+    expect(document.querySelector(".direction.long")).toHaveTextContent("LONG");
+    expect(document.querySelector(".direction.short")).toHaveTextContent("SHORT");
+    expect(document.querySelector(".direction.neutral")).toHaveTextContent("NEUTRAL");
 
     await user.click(screen.getByRole("button", { name: "Scoring" }));
     const rowsAscending = screen.getAllByRole("row").slice(1);
@@ -135,6 +144,36 @@ describe("App", () => {
     await user.click(await screen.findByRole("button", { name: "Свой график" }));
 
     expect(screen.getByRole("img", { name: "Свой график AAAUSDT" })).toBeInTheDocument();
+  });
+
+  it("filters direction and class locally without another scan", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => response([
+        result({ ticker: "LONGAUSDT", direction: "LONG", class: "A" }),
+        result({ ticker: "SHORTBUSDT", direction: "SHORT", direction_candidate: "SHORT", class: "B" })
+      ])
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Сканировать" }));
+    await screen.findByText("LONGAUSDT");
+    await user.click(screen.getByRole("button", { name: "LONG" }));
+
+    expect(screen.queryByText("LONGAUSDT")).not.toBeInTheDocument();
+    expect(screen.getByText("SHORTBUSDT")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("button", { name: "Сбросить" }));
+    expect(screen.getByText("LONGAUSDT")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "B" }));
+    expect(screen.getByText("LONGAUSDT")).toBeInTheDocument();
+    expect(screen.queryByText("SHORTBUSDT")).not.toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

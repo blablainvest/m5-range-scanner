@@ -66,6 +66,15 @@ class ScanResult(BaseModel):
     direction: str
     direction_candidate: str
     direction_confirmation: str
+    btc_correlation_5h: Optional[float]
+    btc_correlation_pairs: int
+    btc_change_pct_5h: Optional[float]
+    asset_change_pct_5h: Optional[float]
+    relative_strength_pct: Optional[float]
+    btc_trend: str
+    btc_signal: str
+    btc_score_adjustment: int
+    rating_with_btc_preview: int
     range_candles: int
     range_minutes: int
     range_width_pct: float

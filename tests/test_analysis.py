@@ -1,6 +1,7 @@
 from backend.app.analysis import (
     analyze_symbol,
     adx_14,
+    btc_context,
     closed_candles,
     confirm_direction,
     count_independent_zone_touches,
@@ -40,6 +41,26 @@ def trending_candles(count: int = 18) -> list[Candle]:
     for index in range(count):
         close = 100 + index * 0.4
         candles.append(candle(index * 300_000, open_price=close - 0.15, high=close + 0.25, low=close - 0.25, close=close))
+    return candles
+
+
+def candles_from_returns(returns: list[float], start: float = 100) -> list[Candle]:
+    import math
+
+    candles = [candle(0, open_price=start, high=start, low=start, close=start)]
+    price = start
+    for index, item_return in enumerate(returns, start=1):
+        previous = price
+        price *= math.exp(item_return)
+        candles.append(
+            candle(
+                index * 300_000,
+                open_price=previous,
+                high=max(previous, price) * 1.001,
+                low=min(previous, price) * 0.999,
+                close=price,
+            )
+        )
     return candles
 
 
@@ -141,6 +162,44 @@ def test_direction_confirmation_keeps_candidate_separate_from_final_direction() 
     assert confirm_direction("NEUTRAL", squeeze=0, volume_ratio=0.0) == ("NEUTRAL", "not_applicable")
 
 
+def test_btc_context_uses_synchronized_log_returns() -> None:
+    returns = [0.001 if index % 2 else -0.0004 for index in range(60)]
+    btc = candles_from_returns(returns)
+    asset = candles_from_returns([value * 1.5 for value in returns])
+
+    context = btc_context("TESTUSDT", asset, btc, "LONG")
+
+    assert context.pairs == 60
+    assert context.correlation is not None
+    assert context.correlation > 0.99
+    assert context.signal in {"btc_confirmed", "btc_driven"}
+
+
+def test_btc_context_detects_strength_and_headwind_against_btc() -> None:
+    btc_returns = [-0.0012 if index % 2 else -0.0008 for index in range(60)]
+    btc = candles_from_returns(btc_returns)
+    strong_asset = candles_from_returns([0.0008 if index % 2 else 0.0012 for index in range(60)])
+    weak_asset = candles_from_returns([value * 1.2 for value in btc_returns])
+
+    strength = btc_context("STRONGUSDT", strong_asset, btc, "LONG")
+    headwind = btc_context("WEAKUSDT", weak_asset, btc, "LONG")
+
+    assert strength.signal == "own_strength"
+    assert strength.score_adjustment == 5
+    assert headwind.signal == "btc_headwind"
+    assert headwind.score_adjustment == -3
+
+
+def test_btc_context_is_insufficient_below_30_pairs() -> None:
+    candles = candles_from_returns([0.001] * 20)
+
+    context = btc_context("TESTUSDT", candles, candles, "NEUTRAL")
+
+    assert context.signal == "insufficient"
+    assert context.pairs == 20
+    assert context.score_adjustment == 0
+
+
 def test_setup_class_thresholds() -> None:
     assert setup_class(93) == "A+"
     assert setup_class(84) == "A"
@@ -207,6 +266,8 @@ def test_scan_result_schema_exposes_flat_diagnostics_and_no_spread() -> None:
     assert "trend_start_timestamp" in fields
     assert "direction_candidate" in fields
     assert "direction_confirmation" in fields
+    assert "btc_correlation_5h" in fields
+    assert "rating_with_btc_preview" in fields
 
 
 def test_scan_request_includes_neutral_by_default() -> None:
@@ -259,3 +320,38 @@ def test_analyze_symbol_preserves_aligned_trend_when_confirmation_is_weak() -> N
     assert result.trend_alignment == "aligned"
     assert result.direction_confirmation in {"weak_volume", "weak_squeeze_and_volume"}
     assert "previous trend is neutral" not in result.warnings
+
+
+def test_btc_shadow_context_does_not_change_base_rating() -> None:
+    candles = bullish_then_flat_candles()
+    btc_candles = candles_from_returns(
+        [0.001 if index % 2 else -0.0004 for index in range(len(candles) - 1)]
+    )
+    ticker = Ticker(symbol="TESTUSDT", last_price=100.62, turnover_24h_usd=3_000_000)
+    now_ms = candles[-1].timestamp + 300_000
+
+    without_btc = analyze_symbol(
+        ticker,
+        candles,
+        tick_size=0.01,
+        min_rating=0,
+        include_neutral=True,
+        now_ms=now_ms,
+    )
+    with_btc = analyze_symbol(
+        ticker,
+        candles,
+        tick_size=0.01,
+        min_rating=0,
+        include_neutral=True,
+        now_ms=now_ms,
+        btc_candles=btc_candles,
+    )
+
+    assert without_btc is not None
+    assert with_btc is not None
+    assert with_btc.rating == without_btc.rating
+    assert with_btc.rating_with_btc_preview == max(
+        0,
+        min(100, with_btc.rating + with_btc.btc_score_adjustment),
+    )

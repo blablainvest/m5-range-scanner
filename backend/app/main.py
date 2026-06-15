@@ -15,6 +15,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s level=%(levelname)s logger=%(name)s message=%(message)s",
 )
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 @asynccontextmanager
@@ -27,7 +28,7 @@ async def lifespan(app: FastAPI):
         await bybit.close()
 
 
-app = FastAPI(title="M5 Range Scanner", version="0.1.1", lifespan=lifespan)
+app = FastAPI(title="M5 Range Scanner", version="0.2.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

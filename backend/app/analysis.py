@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from statistics import mean
 from typing import Optional
 
@@ -63,6 +64,18 @@ class SidewaysMetrics:
     adx_14: float
     close_inside_ratio: float
     body_inside_ratio: float
+
+
+@dataclass
+class BtcContext:
+    correlation: Optional[float]
+    pairs: int
+    btc_change_pct: Optional[float]
+    asset_change_pct: Optional[float]
+    relative_strength_pct: Optional[float]
+    btc_trend: str
+    signal: str
+    score_adjustment: int
 
 
 def closed_candles(candles: list[Candle], now_ms: int) -> list[Candle]:
@@ -522,6 +535,108 @@ def confirm_direction(direction_candidate: str, squeeze: int, volume_ratio: floa
     return direction_candidate, "confirmed"
 
 
+def btc_context(
+    symbol: str,
+    asset_candles: list[Candle],
+    btc_candles: list[Candle],
+    direction_candidate: str,
+    max_pairs: int = 60,
+    min_pairs: int = 30,
+) -> BtcContext:
+    asset_prices = {candle.timestamp: candle.close for candle in asset_candles if candle.close > 0}
+    btc_prices = {candle.timestamp: candle.close for candle in btc_candles if candle.close > 0}
+    common_timestamps = sorted(set(asset_prices) & set(btc_prices))
+
+    paired_returns: list[tuple[int, int, float, float]] = []
+    for previous_timestamp, current_timestamp in zip(common_timestamps, common_timestamps[1:]):
+        if current_timestamp - previous_timestamp != 5 * 60 * 1000:
+            continue
+        asset_return = math.log(asset_prices[current_timestamp] / asset_prices[previous_timestamp])
+        btc_return = math.log(btc_prices[current_timestamp] / btc_prices[previous_timestamp])
+        paired_returns.append((previous_timestamp, current_timestamp, asset_return, btc_return))
+
+    recent_pairs = paired_returns[-max_pairs:]
+    if len(recent_pairs) < min_pairs:
+        return BtcContext(None, len(recent_pairs), None, None, None, "insufficient", "insufficient", 0)
+
+    asset_returns = [item[2] for item in recent_pairs]
+    btc_returns = [item[3] for item in recent_pairs]
+    asset_mean = mean(asset_returns)
+    btc_mean = mean(btc_returns)
+    covariance = sum(
+        (asset_return - asset_mean) * (btc_return - btc_mean)
+        for asset_return, btc_return in zip(asset_returns, btc_returns)
+    )
+    asset_variance = sum((value - asset_mean) ** 2 for value in asset_returns)
+    btc_variance = sum((value - btc_mean) ** 2 for value in btc_returns)
+    denominator = math.sqrt(asset_variance * btc_variance)
+    correlation = covariance / denominator if denominator > 0 else None
+
+    start_timestamp = recent_pairs[0][0]
+    end_timestamp = recent_pairs[-1][1]
+    asset_change = ((asset_prices[end_timestamp] / asset_prices[start_timestamp]) - 1) * 100
+    btc_change = ((btc_prices[end_timestamp] / btc_prices[start_timestamp]) - 1) * 100
+    relative_strength = asset_change - btc_change
+    btc_trend = "bullish" if btc_change > 0.3 else "bearish" if btc_change < -0.3 else "neutral"
+
+    if correlation is None:
+        return BtcContext(
+            None,
+            len(recent_pairs),
+            btc_change,
+            asset_change,
+            relative_strength,
+            btc_trend,
+            "insufficient",
+            0,
+        )
+
+    signal = "mixed"
+    if symbol == "BTCUSDT":
+        signal = "btc_driven"
+    elif direction_candidate == "LONG":
+        if btc_trend == "bearish" and asset_change > 0 and relative_strength >= 0.5:
+            signal = "own_strength"
+        elif btc_trend == "bullish" and asset_change > 0 and correlation >= 0.3:
+            signal = "btc_confirmed"
+        elif btc_trend == "bearish" and relative_strength < 0.5:
+            signal = "btc_headwind"
+    elif direction_candidate == "SHORT":
+        if btc_trend == "bullish" and asset_change < 0 and relative_strength <= -0.5:
+            signal = "own_weakness"
+        elif btc_trend == "bearish" and asset_change < 0 and correlation >= 0.3:
+            signal = "btc_confirmed"
+        elif btc_trend == "bullish" and relative_strength > -0.5:
+            signal = "btc_headwind"
+
+    if signal == "mixed":
+        if abs(correlation) <= 0.3:
+            signal = "independent"
+        elif correlation >= 0.65:
+            signal = "btc_driven"
+
+    adjustment = {
+        "own_strength": 5,
+        "own_weakness": 5,
+        "btc_confirmed": 3,
+        "independent": 2,
+        "btc_headwind": -3,
+    }.get(signal, 0)
+    if symbol == "BTCUSDT":
+        adjustment = 0
+
+    return BtcContext(
+        correlation=max(-1.0, min(1.0, correlation)),
+        pairs=len(recent_pairs),
+        btc_change_pct=btc_change,
+        asset_change_pct=asset_change,
+        relative_strength_pct=relative_strength,
+        btc_trend=btc_trend,
+        signal=signal,
+        score_adjustment=adjustment,
+    )
+
+
 def analyze_symbol(
     ticker: Ticker,
     candles: list[Candle],
@@ -529,6 +644,7 @@ def analyze_symbol(
     min_rating: int,
     include_neutral: bool,
     now_ms: int,
+    btc_candles: Optional[list[Candle]] = None,
 ) -> Optional[ScanResult]:
     closed = closed_candles(candles, now_ms)
     if len(closed) < max(config.range_windows) + 30:
@@ -709,6 +825,9 @@ def analyze_symbol(
         change_1h = ((ticker.last_price - ticker.prev_price_1h) / ticker.prev_price_1h) * 100
     chart_start_index = max(0, best.trend_start_index, len(closed) - 80)
     chart_candles = to_chart_candles(closed[chart_start_index : best.range_end_index + 1])
+    closed_btc = closed_candles(btc_candles or [], now_ms)
+    btc = btc_context(ticker.symbol, closed, closed_btc, best.direction_candidate)
+    rating_with_btc_preview = max(0, min(100, best.score + btc.score_adjustment))
 
     return ScanResult(
         ticker=ticker.symbol,
@@ -723,6 +842,15 @@ def analyze_symbol(
         direction=best.direction,
         direction_candidate=best.direction_candidate,
         direction_confirmation=best.direction_confirmation,
+        btc_correlation_5h=btc.correlation,
+        btc_correlation_pairs=btc.pairs,
+        btc_change_pct_5h=btc.btc_change_pct,
+        asset_change_pct_5h=btc.asset_change_pct,
+        relative_strength_pct=btc.relative_strength_pct,
+        btc_trend=btc.btc_trend,
+        btc_signal=btc.signal,
+        btc_score_adjustment=btc.score_adjustment,
+        rating_with_btc_preview=rating_with_btc_preview,
         range_candles=best.window,
         range_minutes=best.window * 5,
         range_width_pct=best.width_pct,

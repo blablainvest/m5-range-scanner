@@ -82,6 +82,12 @@ class ScannerService:
         ]
         eligible_instruments.sort(key=lambda instrument: tickers[instrument.symbol].turnover_24h_usd, reverse=True)
 
+        try:
+            btc_candles = await self.bybit.klines("BTCUSDT")
+        except Exception:
+            btc_candles = []
+            logger.exception("btc_context_unavailable symbol=BTCUSDT endpoint=/v5/market/kline")
+
         semaphore = asyncio.Semaphore(config.max_concurrent_requests)
         errors = 0
         analyzed = 0
@@ -94,7 +100,7 @@ class ScannerService:
                 await asyncio.sleep(config.delay_between_batches_ms / 1000)
             async with semaphore:
                 try:
-                    candles = await self.bybit.klines(symbol)
+                    candles = btc_candles if symbol == "BTCUSDT" else await self.bybit.klines(symbol)
                     analyzed += 1
                     return analyze_symbol(
                         tickers[symbol],
@@ -103,6 +109,7 @@ class ScannerService:
                         min_rating=request.min_rating,
                         include_neutral=request.include_neutral,
                         now_ms=now_ms,
+                        btc_candles=btc_candles,
                     )
                 except Exception:
                     errors += 1

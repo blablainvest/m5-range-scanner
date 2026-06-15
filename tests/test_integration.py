@@ -120,6 +120,7 @@ class FakeBybit:
     def __init__(self, fail_symbol: str | None = None) -> None:
         self.fail_symbol = fail_symbol
         self.instruments_calls = 0
+        self.kline_calls: list[str] = []
 
     async def instruments(self) -> list[Instrument]:
         self.instruments_calls += 1
@@ -141,6 +142,7 @@ class FakeBybit:
         }
 
     async def klines(self, symbol: str) -> list[Candle]:
+        self.kline_calls.append(symbol)
         if symbol == self.fail_symbol:
             raise RuntimeError("expected test failure")
         return [
@@ -181,3 +183,14 @@ async def test_scanner_cache_and_force() -> None:
     assert second.from_cache is True
     assert forced.from_cache is False
     assert bybit.instruments_calls == 2
+    assert bybit.kline_calls.count("BTCUSDT") == 2
+
+
+@pytest.mark.asyncio
+async def test_scanner_loads_btc_once_per_uncached_scan() -> None:
+    bybit = FakeBybit()
+    scanner = ScannerService(bybit)  # type: ignore[arg-type]
+
+    await scanner.scan(ScanRequest(min_rating=0, max_results=10))
+
+    assert bybit.kline_calls.count("BTCUSDT") == 1
