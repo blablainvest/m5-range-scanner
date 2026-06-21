@@ -1,3 +1,5 @@
+import os
+
 from pydantic import BaseModel
 
 
@@ -29,6 +31,14 @@ class ScannerConfig(BaseModel):
     body_inside_ratio_min: float = 0.60
     touch_zone_ratio: float = 0.2
     independent_touch_outside_candles: int = 2
+    database_url: str = os.getenv("DATABASE_URL", "sqlite:///./m5_scanner.db")
+    automatic_scan_min_rating: int = int(os.getenv("AUTOMATIC_SCAN_MIN_RATING", "0"))
+    automatic_scan_max_results: int = int(os.getenv("AUTOMATIC_SCAN_MAX_RESULTS", "1000"))
+    automatic_scan_turnover_min: float = float(os.getenv("AUTOMATIC_SCAN_TURNOVER_MIN", "2000000"))
+    scan_interval_minutes: int = int(os.getenv("SCAN_INTERVAL_MINUTES", "15"))
+    schedule_offset_minute_utc: int = int(os.getenv("SCHEDULE_OFFSET_MINUTE_UTC", "2"))
+    setup_dedup_minutes: int = int(os.getenv("SETUP_DEDUP_MINUTES", "60"))
+    outcome_window_minutes: int = int(os.getenv("OUTCOME_WINDOW_MINUTES", "60"))
 
 
 config = ScannerConfig()

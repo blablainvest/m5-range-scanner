@@ -1,0 +1,8 @@
+[Unit]
+Description=Check and recover M5 Range Scanner
+After=docker.service m5-scanner.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/m5-scanner/deploy/watchdog.sh

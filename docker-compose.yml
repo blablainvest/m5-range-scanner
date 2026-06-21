@@ -1,10 +1,54 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-m5_scanner}
+      POSTGRES_USER: ${POSTGRES_USER:-m5_scanner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-m5_scanner} -d ${POSTGRES_DB:-m5_scanner}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   backend:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    ports:
-      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-m5_scanner}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-m5_scanner}
+    expose:
+      - "8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["sh", "-c", "alembic upgrade head && python -m backend.app.worker"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-m5_scanner}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-m5_scanner}
+      AUTOMATIC_SCAN_MIN_RATING: ${AUTOMATIC_SCAN_MIN_RATING:-0}
+      AUTOMATIC_SCAN_MAX_RESULTS: ${AUTOMATIC_SCAN_MAX_RESULTS:-1000}
+      AUTOMATIC_SCAN_TURNOVER_MIN: ${AUTOMATIC_SCAN_TURNOVER_MIN:-2000000}
+      SCAN_INTERVAL_MINUTES: ${SCAN_INTERVAL_MINUTES:-15}
+      SCHEDULE_OFFSET_MINUTE_UTC: ${SCHEDULE_OFFSET_MINUTE_UTC:-2}
+      SETUP_DEDUP_MINUTES: ${SETUP_DEDUP_MINUTES:-60}
+      OUTCOME_WINDOW_MINUTES: ${OUTCOME_WINDOW_MINUTES:-60}
+    depends_on:
+      backend:
+        condition: service_healthy
     restart: unless-stopped
 
   frontend:
@@ -12,9 +56,13 @@ services:
       context: .
       dockerfile: Dockerfile.frontend
     ports:
-      - "5173:5173"
-    environment:
-      VITE_API_PROXY_TARGET: http://backend:8000
+      - "80:80"
+    volumes:
+      - ./.htpasswd:/etc/nginx/.htpasswd:ro
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  postgres_data:

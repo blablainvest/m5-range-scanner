@@ -1,10 +1,27 @@
 import React from "react";
-import { ArrowDown, ArrowUp, ExternalLink, RefreshCw, Search } from "lucide-react";
+import { ArrowDown, ArrowUp, Clock3, Download, ExternalLink, Radar, RefreshCw, Search } from "lucide-react";
 
 type Direction = "LONG" | "SHORT" | "NEUTRAL";
 type SetupClass = "A+" | "A" | "B" | "C" | "Weak";
 type SortKey = "ticker" | "rating" | "turnover_24h_usd" | "price_position" | "volume_ratio" | "range_width_pct" | "sideways_confidence";
 type SortDirection = "asc" | "desc";
+
+type TradePlan = {
+  version: string;
+  status: string;
+  reason: string | null;
+  direction: Direction;
+  activation: string;
+  entry_price: number | null;
+  stop_loss: number | null;
+  risk_price: number | null;
+  target_1r: number | null;
+  target_2r: number | null;
+  target_3r: number | null;
+  trigger_price: number | null;
+  retest_zone_low: number | null;
+  retest_zone_high: number | null;
+};
 
 type ScanResult = {
   ticker: string;
@@ -56,6 +73,17 @@ type ScanResult = {
   range_end_timestamp: number;
   trend_start_timestamp: number;
   trend_end_timestamp: number;
+  trade_plan_status: string;
+  trade_plan_reason: string | null;
+  trade_plan_version: string | null;
+  entry_price: number | null;
+  stop_loss: number | null;
+  take_profit: number | null;
+  risk_price: number | null;
+  reward_risk: number | null;
+  shelf_start_timestamp: number | null;
+  shelf_end_timestamp: number | null;
+  trade_plan_variants: TradePlan[];
   reasons: string[];
   warnings: string[];
 };
@@ -66,6 +94,7 @@ type ChartCandle = {
   high: number;
   low: number;
   close: number;
+  volume: number;
   turnover: number;
 };
 
@@ -81,12 +110,52 @@ type ScanResponse = {
   results: ScanResult[];
 };
 
-const numberFormatter = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 });
+type HistoryItem = {
+  id: number;
+  symbol: string;
+  direction: Direction;
+  first_seen_at: string;
+  last_seen_at: string;
+  rating: number;
+  setup_class: SetupClass;
+  support_level: number;
+  resistance_level: number;
+  entry_price: number | null;
+  stop_loss: number | null;
+  take_profit: number | null;
+  reward_risk: number | null;
+  trade_plan_status: string;
+  outcome: string;
+  entered_at: string | null;
+  resolved_at: string | null;
+  price_at_deadline: number | null;
+  mfe_r: number | null;
+  mae_r: number | null;
+  ambiguous_intrabar: boolean;
+};
+
+type HistoryResponse = {
+  page: number;
+  page_size: number;
+  total: number;
+  items: HistoryItem[];
+};
+
+type SetupDetail = {
+  setup: HistoryItem;
+  detector_version: string;
+  feature_schema_version: string;
+  snapshot_id: number | null;
+  result: ScanResult;
+  plans: TradePlan[];
+};
+
+const numberFormatters = new Map<number, Intl.NumberFormat>();
 const compactFormatter = new Intl.NumberFormat("en-US", {
   notation: "compact",
   maximumFractionDigits: 2
 });
-const allDirections: Direction[] = ["LONG", "SHORT", "NEUTRAL"];
+const allDirections: Direction[] = ["LONG", "SHORT"];
 const allClasses: SetupClass[] = ["A+", "A", "B", "C", "Weak"];
 const btcSignalLabels: Record<string, string> = {
   own_strength: "Own strength",
@@ -98,17 +167,34 @@ const btcSignalLabels: Record<string, string> = {
   mixed: "Mixed",
   insufficient: "Insufficient"
 };
+const outcomeLabels: Record<string, string> = {
+  PENDING: "Ожидает / в работе"
+};
 
 function formatUsd(value: number) {
   return `$${compactFormatter.format(value)}`;
 }
 
 function formatNumber(value: number, digits = 2) {
-  return numberFormatter.format(Number(value.toFixed(digits)));
+  const normalizedDigits = Math.max(0, Math.min(20, digits));
+  let formatter = numberFormatters.get(normalizedDigits);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat("en-US", { maximumFractionDigits: normalizedDigits });
+    numberFormatters.set(normalizedDigits, formatter);
+  }
+  return formatter.format(Number(value.toFixed(normalizedDigits)));
 }
 
-function formatOptionalNumber(value: number | null, digits = 2) {
-  return value === null ? "—" : formatNumber(value, digits);
+function formatOptionalNumber(value: number | null | undefined, digits = 2) {
+  return value == null ? "—" : formatNumber(value, digits);
+}
+
+function formatDate(value: string | null) {
+  return value ? new Date(value).toLocaleString("ru-RU") : "—";
+}
+
+function formatOutcome(value: string) {
+  return outcomeLabels[value] ?? value;
 }
 
 function formatSigned(value: number) {
@@ -121,7 +207,12 @@ function classNameForDirection(direction: Direction) {
   return "direction neutral";
 }
 
+function apiUrl(path: string) {
+  return new URL(path, `${window.location.origin}/`).toString();
+}
+
 export function App() {
+  const [activeView, setActiveView] = React.useState<"scanner" | "history">("scanner");
   const [data, setData] = React.useState<ScanResponse | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -140,7 +231,7 @@ export function App() {
     setExpandedTicker(null);
     setChartTicker(null);
     try {
-      const response = await fetch("/api/scan", {
+      const response = await fetch(apiUrl("/api/scan"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -212,7 +303,33 @@ export function App() {
   }, [filteredResults, sortDirection, sortKey]);
 
   return (
-    <main className="app-shell">
+    <div className="workspace-shell">
+      <aside className="sidebar">
+        <div className="brand-block">
+          <span className="brand-mark">5M</span>
+          <div>
+            <strong>Range Scanner</strong>
+            <small>Phase II</small>
+          </div>
+        </div>
+        <nav aria-label="Основная навигация">
+          <button className={activeView === "scanner" ? "nav-item active" : "nav-item"} onClick={() => setActiveView("scanner")}>
+            <Radar size={18} />
+            Сканер
+          </button>
+          <button className={activeView === "history" ? "nav-item active" : "nav-item"} onClick={() => setActiveView("history")}>
+            <Clock3 size={18} />
+            История
+          </button>
+        </nav>
+        <div className="sidebar-note">
+          <span>Автоскан</span>
+          <strong>каждые 15 минут</strong>
+        </div>
+      </aside>
+      <main className="app-shell">
+      {activeView === "scanner" ? (
+      <>
       <header className="topbar">
         <div>
           <h1>M5 Range Scanner</h1>
@@ -284,6 +401,9 @@ export function App() {
               <SortableHeader label="Range Width" active={sortKey === "range_width_pct"} direction={sortDirection} onClick={() => updateSort("range_width_pct")} />
               <th>BTC Context</th>
               <th>BTC Preview</th>
+              <th>ТВХ</th>
+              <th>СЛ</th>
+              <th>ТП</th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -320,6 +440,9 @@ export function App() {
                       {formatSigned(result.btc_score_adjustment)}
                     </span>
                   </td>
+                  <td className="numeric">{result.entry_price == null ? "—" : formatNumber(result.entry_price, 8)}</td>
+                  <td className="numeric stop-value">{result.stop_loss == null ? "—" : formatNumber(result.stop_loss, 8)}</td>
+                  <td className="numeric take-value">{result.take_profit == null ? "—" : formatNumber(result.take_profit, 8)}</td>
                   <td>
                     <button
                       className="chart-button"
@@ -335,15 +458,19 @@ export function App() {
                 </tr>
                 {chartTicker === result.ticker && (
                   <tr className="chart-row">
-                    <td colSpan={13}>
+                    <td colSpan={16}>
                       <SetupChart result={result} />
                     </td>
                   </tr>
                 )}
                 {expandedTicker === result.ticker && (
                   <tr className="details-row">
-                    <td colSpan={13}>
+                    <td colSpan={16}>
                       <div className="details-grid">
+                        <Metric label="Trade plan" value={result.trade_plan_status} />
+                        <Metric label="ТВХ / СЛ / ТП" value={`${formatOptionalNumber(result.entry_price, 8)} / ${formatOptionalNumber(result.stop_loss, 8)} / ${formatOptionalNumber(result.take_profit, 8)}`} />
+                        <Metric label="Risk / RR" value={`${formatOptionalNumber(result.risk_price, 8)} / ${formatOptionalNumber(result.reward_risk, 1)}`} />
+                        <Metric label="Plan reason" value={result.trade_plan_reason ?? "ready"} />
                         <Metric label="Support" value={formatNumber(result.support_level, 8)} />
                         <Metric label="Resistance" value={formatNumber(result.resistance_level, 8)} />
                         <Metric label="Touches R/S" value={`${result.resistance_touches}/${result.support_touches}`} />
@@ -377,7 +504,7 @@ export function App() {
             ))}
             {!loading && sortedResults.length === 0 && (
               <tr>
-                <td colSpan={13} className="empty-state">
+                <td colSpan={16} className="empty-state">
                   {data ? "Setup не найдены с текущими фильтрами." : "Результаты появятся здесь после сканирования."}
                 </td>
               </tr>
@@ -385,23 +512,282 @@ export function App() {
           </tbody>
         </table>
       </section>
-    </main>
+      </>
+      ) : (
+        <HistoryView />
+      )}
+      </main>
+    </div>
+  );
+}
+
+function HistoryView() {
+  const [data, setData] = React.useState<HistoryResponse | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
+  const [symbol, setSymbol] = React.useState("");
+  const [direction, setDirection] = React.useState("");
+  const [outcome, setOutcome] = React.useState("");
+  const [minRating, setMinRating] = React.useState("");
+  const [dateFrom, setDateFrom] = React.useState("");
+  const [dateTo, setDateTo] = React.useState("");
+  const [page, setPage] = React.useState(1);
+  const [expandedId, setExpandedId] = React.useState<number | null>(null);
+  const [detail, setDetail] = React.useState<SetupDetail | null>(null);
+  const [detailLoading, setDetailLoading] = React.useState(false);
+
+  function queryParams(includePage = true) {
+    const params = new URLSearchParams();
+    if (symbol.trim()) params.set("symbol", symbol.trim());
+    if (direction) params.set("direction", direction);
+    if (outcome) params.set("outcome", outcome);
+    if (minRating) params.set("min_rating", minRating);
+    if (dateFrom) params.set("date_from", `${dateFrom}T00:00:00Z`);
+    if (dateTo) params.set("date_to", `${dateTo}T23:59:59Z`);
+    if (includePage) {
+      params.set("page", String(page));
+      params.set("page_size", "50");
+    }
+    return params;
+  }
+
+  async function loadHistory() {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(apiUrl(`/api/history?${queryParams().toString()}`));
+      if (!response.ok) throw new Error(`API вернул ${response.status}`);
+      setData((await response.json()) as HistoryResponse);
+    } catch (historyError) {
+      setError(historyError instanceof Error ? historyError.message : "Не удалось загрузить историю");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function toggleDetail(setupId: number) {
+    if (expandedId === setupId) {
+      setExpandedId(null);
+      setDetail(null);
+      return;
+    }
+    setExpandedId(setupId);
+    setDetail(null);
+    setDetailLoading(true);
+    try {
+      const response = await fetch(apiUrl(`/api/history/${setupId}`));
+      if (!response.ok) throw new Error(`API вернул ${response.status}`);
+      setDetail((await response.json()) as SetupDetail);
+    } catch (detailError) {
+      setError(detailError instanceof Error ? detailError.message : "Не удалось загрузить график");
+    } finally {
+      setDetailLoading(false);
+    }
+  }
+
+  React.useEffect(() => {
+    void loadHistory();
+  }, [page]);
+
+  function applyFilters(event: React.FormEvent) {
+    event.preventDefault();
+    if (page !== 1) {
+      setPage(1);
+    } else {
+      void loadHistory();
+    }
+  }
+
+  const exportUrl = apiUrl(`/api/history/export.xlsx?${queryParams(false).toString()}`);
+  const totalPages = Math.max(1, Math.ceil((data?.total ?? 0) / 50));
+
+  return (
+    <>
+      <header className="topbar">
+        <div>
+          <h1>История сетапов</h1>
+          <p>Все обнаруженные диапазоны, торговые планы и результат первого часа.</p>
+        </div>
+        <div className="actions">
+          <a className="scan-button secondary export-button" href={apiUrl("/api/ml/export.parquet")}>
+            <Download size={17} />
+            ML Parquet
+          </a>
+          <a className="scan-button export-button" href={exportUrl}>
+            <Download size={17} />
+            Скачать XLSX
+          </a>
+        </div>
+      </header>
+
+      <form className="controls history-controls" onSubmit={applyFilters}>
+        <label>
+          Монета
+          <input value={symbol} onChange={(event) => setSymbol(event.target.value.toUpperCase())} placeholder="BTCUSDT" />
+        </label>
+        <label>
+          Направление
+          <select value={direction} onChange={(event) => setDirection(event.target.value)}>
+            <option value="">Все</option>
+            <option value="LONG">LONG</option>
+            <option value="SHORT">SHORT</option>
+            <option value="NEUTRAL">NEUTRAL (архив)</option>
+          </select>
+        </label>
+        <label>
+          Исход
+          <select value={outcome} onChange={(event) => setOutcome(event.target.value)}>
+            <option value="">Все</option>
+            <option value="PENDING">Ожидает / в работе</option>
+            <option value="NO_TRADE">Без сделки</option>
+            <option value="STOP">Стоп</option>
+            <option value="TAKE">Тейк</option>
+            <option value="NOT_APPLICABLE">Без плана</option>
+          </select>
+        </label>
+        <label>
+          Рейтинг от
+          <input type="number" min="0" max="100" value={minRating} onChange={(event) => setMinRating(event.target.value)} />
+        </label>
+        <label>
+          От
+          <input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} />
+        </label>
+        <label>
+          До
+          <input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} />
+        </label>
+        <button className="scan-button history-submit" type="submit" disabled={loading}>
+          <Search size={16} />
+          Применить
+        </button>
+      </form>
+
+      <section className="status-line">
+        {error && <span className="error">Ошибка: {error}</span>}
+        {!error && loading && <span>Загрузка истории...</span>}
+        {!error && !loading && <span>Найдено сетапов: {data?.total ?? 0}</span>}
+      </section>
+
+      <section className="table-wrap history-table">
+        <table>
+          <thead>
+            <tr>
+              <th>Время</th>
+              <th>Монета</th>
+              <th>Direction</th>
+              <th>Rating</th>
+              <th>ТВХ</th>
+              <th>СЛ</th>
+              <th>ТП</th>
+              <th>RR</th>
+              <th>План</th>
+              <th>Исход</th>
+              <th>Вход</th>
+              <th>MFE / MAE</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(data?.items ?? []).map((item) => (
+              <React.Fragment key={item.id}>
+              <tr className="result-row" onClick={() => void toggleDetail(item.id)}>
+                <td>{formatDate(item.first_seen_at)}</td>
+                <td>
+                  <a className="ticker-link" href={`https://www.bybit.com/trade/usdt/${item.symbol}`} target="_blank" rel="noreferrer">
+                    {item.symbol}
+                    <ExternalLink size={13} />
+                  </a>
+                </td>
+                <td><span className={classNameForDirection(item.direction)}>{item.direction}</span></td>
+                <td className="numeric rating">{item.rating} <span className="history-class">{item.setup_class}</span></td>
+                <td className="numeric">{formatOptionalNumber(item.entry_price, 8)}</td>
+                <td className="numeric stop-value">{formatOptionalNumber(item.stop_loss, 8)}</td>
+                <td className="numeric take-value">{formatOptionalNumber(item.take_profit, 8)}</td>
+                <td className="numeric">{formatOptionalNumber(item.reward_risk, 1)}</td>
+                <td><span className={`plan-status ${item.trade_plan_status.toLowerCase()}`}>{item.trade_plan_status}</span></td>
+                <td>
+                  <span className={`outcome ${item.outcome.toLowerCase()}`}>{formatOutcome(item.outcome)}</span>
+                  {item.ambiguous_intrabar && <small className="ambiguous-note">M1: стоп при конфликте</small>}
+                </td>
+                <td>{formatDate(item.entered_at)}</td>
+                <td className="numeric">{formatOptionalNumber(item.mfe_r, 2)} / {formatOptionalNumber(item.mae_r, 2)}</td>
+              </tr>
+              {expandedId === item.id && (
+                <tr className="chart-row">
+                  <td colSpan={12}>
+                    {detailLoading && <div className="chart-fallback">Загрузка снимка и моделей...</div>}
+                    {!detailLoading && detail?.setup.id === item.id && <SetupChart result={detail.result} />}
+                  </td>
+                </tr>
+              )}
+              </React.Fragment>
+            ))}
+            {!loading && (data?.items.length ?? 0) === 0 && (
+              <tr><td colSpan={12} className="empty-state">История с такими фильтрами пока пуста.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </section>
+
+      <div className="pagination">
+        <button type="button" disabled={page <= 1 || loading} onClick={() => setPage((current) => current - 1)}>Назад</button>
+        <span>Страница {page} из {totalPages}</span>
+        <button type="button" disabled={page >= totalPages || loading} onClick={() => setPage((current) => current + 1)}>Далее</button>
+      </div>
+    </>
   );
 }
 
 export function SetupChart({ result }: { result: ScanResult }) {
   const candles = result.chart_candles;
+  const fallbackPlan: TradePlan = {
+    version: result.trade_plan_version ?? "wick-shelf-v1",
+    status: result.trade_plan_status,
+    reason: result.trade_plan_reason,
+    direction: result.direction,
+    activation: "boundary_touch",
+    entry_price: result.entry_price,
+    stop_loss: result.stop_loss,
+    risk_price: result.risk_price,
+    target_1r: result.risk_price == null || result.entry_price == null
+      ? null
+      : result.direction === "LONG" ? result.entry_price + result.risk_price : result.entry_price - result.risk_price,
+    target_2r: result.risk_price == null || result.entry_price == null
+      ? null
+      : result.direction === "LONG" ? result.entry_price + result.risk_price * 2 : result.entry_price - result.risk_price * 2,
+    target_3r: result.take_profit,
+    trigger_price: result.entry_price,
+    retest_zone_low: null,
+    retest_zone_high: null
+  };
+  const plans = result.trade_plan_variants?.length ? result.trade_plan_variants : [fallbackPlan];
+  const [selectedVersion, setSelectedVersion] = React.useState(plans[0].version);
+  React.useEffect(() => {
+    setSelectedVersion(plans[0].version);
+  }, [result.ticker, result.range_end_timestamp]);
+  const plan = plans.find((item) => item.version === selectedVersion) ?? plans[0];
+
   if (!candles.length) {
     return <div className="chart-fallback">Нет свечей для встроенного графика.</div>;
   }
 
-  const width = 1080;
+  const width = 1180;
   const height = 360;
-  const pad = { top: 22, right: 64, bottom: 34, left: 54 };
+  const pad = { top: 22, right: 170, bottom: 34, left: 54 };
   const plotWidth = width - pad.left - pad.right;
   const plotHeight = height - pad.top - pad.bottom;
-  const minLow = Math.min(...candles.map((candle) => candle.low), result.support_level);
-  const maxHigh = Math.max(...candles.map((candle) => candle.high), result.resistance_level);
+  const planPrices = [
+    plan.entry_price,
+    plan.stop_loss,
+    plan.target_1r,
+    plan.target_2r,
+    plan.target_3r,
+    plan.trigger_price,
+    plan.retest_zone_low,
+    plan.retest_zone_high
+  ].filter((value): value is number => value != null);
+  const minLow = Math.min(...candles.map((candle) => candle.low), result.support_level, ...planPrices);
+  const maxHigh = Math.max(...candles.map((candle) => candle.high), result.resistance_level, ...planPrices);
   const yPadding = (maxHigh - minLow) * 0.08 || maxHigh * 0.001 || 1;
   const yMin = minLow - yPadding;
   const yMax = maxHigh + yPadding;
@@ -446,6 +832,20 @@ export function SetupChart({ result }: { result: ScanResult }) {
   const rangeH = Math.max(2, Math.abs(supportY - resistanceY));
   const trendX = xForIndex(trendStart) - candleBodyWidth;
   const trendW = Math.max(candleBodyWidth * 2, xForIndex(trendEnd) - xForIndex(trendStart) + candleBodyWidth * 2);
+  const shelfStart = result.shelf_start_timestamp == null ? null : indexForTimestamp(result.shelf_start_timestamp);
+  const shelfEnd = result.shelf_end_timestamp == null ? null : indexForTimestamp(result.shelf_end_timestamp);
+  const zoneX = Math.max(rangeX, xForIndex(rangeEnd));
+  const zoneWidth = width - pad.right - zoneX;
+  const entryY = plan.entry_price == null ? null : yForPrice(plan.entry_price);
+  const stopY = plan.stop_loss == null ? null : yForPrice(plan.stop_loss);
+  const target3Y = plan.target_3r == null ? null : yForPrice(plan.target_3r);
+  const levels = [
+    { label: "ТВХ", price: plan.entry_price, className: "entry-line" },
+    { label: "СЛ", price: plan.stop_loss, className: "stop-line" },
+    { label: "1R", price: plan.target_1r, className: "take-line target-1r" },
+    { label: "2R", price: plan.target_2r, className: "take-line target-2r" },
+    { label: "3R", price: plan.target_3r, className: "take-line target-3r" }
+  ];
 
   return (
     <div className="chart-panel">
@@ -454,7 +854,22 @@ export function SetupChart({ result }: { result: ScanResult }) {
           <strong>{result.ticker}</strong>
           <span>{result.direction} · {result.prev_trend} · {result.trend_alignment}</span>
         </div>
-        <span className={`flat-badge ${result.sideways_quality}`}>{result.sideways_quality} {result.sideways_confidence}</span>
+        <div className="chart-header-actions">
+          <div className="plan-switcher" aria-label="Модель торгового плана">
+            {plans.map((item, index) => (
+              <button
+                key={item.version}
+                type="button"
+                aria-pressed={item.version === plan.version}
+                onClick={() => setSelectedVersion(item.version)}
+              >
+                V{index + 1}
+              </button>
+            ))}
+          </div>
+          <span className={`plan-status ${plan.status.toLowerCase()}`}>{plan.status}</span>
+          <span className={`flat-badge ${result.sideways_quality}`}>{result.sideways_quality} {result.sideways_confidence}</span>
+        </div>
       </div>
       <svg className="setup-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`Свой график ${result.ticker}`}>
         <rect x={0} y={0} width={width} height={height} rx={8} fill="#11161f" />
@@ -464,8 +879,61 @@ export function SetupChart({ result }: { result: ScanResult }) {
         })}
         <rect x={trendX} y={pad.top} width={trendW} height={plotHeight} className="trend-zone" />
         <rect x={rangeX} y={rangeY} width={rangeW} height={rangeH} className="range-zone" />
+        {shelfStart !== null && shelfEnd !== null && (
+          <rect
+            x={xForIndex(shelfStart) - candleBodyWidth}
+            y={rangeY}
+            width={Math.max(candleBodyWidth * 2, xForIndex(shelfEnd) - xForIndex(shelfStart) + candleBodyWidth * 2)}
+            height={rangeH}
+            className="shelf-zone"
+          />
+        )}
+        {entryY !== null && stopY !== null && (
+          <rect
+            x={zoneX}
+            y={Math.min(entryY, stopY)}
+            width={zoneWidth}
+            height={Math.max(2, Math.abs(entryY - stopY))}
+            className="risk-zone"
+          />
+        )}
+        {entryY !== null && target3Y !== null && (
+          <rect
+            x={zoneX}
+            y={Math.min(entryY, target3Y)}
+            width={zoneWidth}
+            height={Math.max(2, Math.abs(entryY - target3Y))}
+            className="reward-zone"
+          />
+        )}
+        {plan.retest_zone_low != null && plan.retest_zone_high != null && (
+          <rect
+            x={zoneX}
+            y={yForPrice(plan.retest_zone_high)}
+            width={zoneWidth}
+            height={Math.max(2, yForPrice(plan.retest_zone_low) - yForPrice(plan.retest_zone_high))}
+            className="retest-zone"
+          />
+        )}
         <line x1={pad.left} x2={width - pad.right} y1={resistanceY} y2={resistanceY} className="resistance-line" />
         <line x1={pad.left} x2={width - pad.right} y1={supportY} y2={supportY} className="support-line" />
+        {plan.trigger_price != null && plan.activation === "two_m5_closes_then_retest" && (
+          <line x1={zoneX} x2={width - pad.right} y1={yForPrice(plan.trigger_price)} y2={yForPrice(plan.trigger_price)} className="trigger-line" />
+        )}
+        {levels.map((level) => level.price == null ? null : (
+          <g key={level.label}>
+            <line
+              x1={pad.left}
+              x2={width - pad.right}
+              y1={yForPrice(level.price)}
+              y2={yForPrice(level.price)}
+              className={level.className}
+            />
+            <text x={width - pad.right + 10} y={yForPrice(level.price) + 4} className={`chart-level-label ${level.className}`}>
+              {level.label} {formatNumber(level.price, 8)}
+            </text>
+          </g>
+        ))}
         <line
           x1={xForIndex(trendStart)}
           y1={yForPrice(trendStartCandle.close)}
@@ -494,6 +962,11 @@ export function SetupChart({ result }: { result: ScanResult }) {
         <text x={pad.left} y={height - 12} className="chart-label">trend context</text>
         <text x={xForIndex(rangeStart)} y={height - 12} className="chart-label">detected range</text>
       </svg>
+      <div className="plan-summary">
+        <strong>{plan.version}</strong>
+        <span>{plan.activation}</span>
+        {plan.reason && <span className={plan.status === "INVALID" ? "error" : ""}>{plan.reason}</span>}
+      </div>
       <div className="chart-diagnostics">
         <Metric label="R2" value={formatNumber(result.flat_r_squared, 3)} />
         <Metric label="ADX" value={formatNumber(result.adx_14, 1)} />
@@ -501,6 +974,9 @@ export function SetupChart({ result }: { result: ScanResult }) {
         <Metric label="Inside close/body" value={`${formatNumber(result.close_inside_ratio, 2)} / ${formatNumber(result.body_inside_ratio, 2)}`} />
         <Metric label="False breakouts" value={String(result.false_breakouts)} />
         <Metric label="Range candles" value={String(result.range_candles)} />
+        <Metric label="Trade plan" value={plan.status} />
+        <Metric label="ТВХ / СЛ / 3R" value={`${formatOptionalNumber(plan.entry_price, 8)} / ${formatOptionalNumber(plan.stop_loss, 8)} / ${formatOptionalNumber(plan.target_3r, 8)}`} />
+        <Metric label="Risk" value={formatOptionalNumber(plan.risk_price, 8)} />
         <Metric label="BTC correlation" value={formatOptionalNumber(result.btc_correlation_5h, 3)} />
         <Metric label="Relative BTC" value={`${formatOptionalNumber(result.relative_strength_pct, 2)}%`} />
         <Metric label="BTC signal" value={btcSignalLabels[result.btc_signal] ?? result.btc_signal} />

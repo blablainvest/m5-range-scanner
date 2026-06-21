@@ -8,3 +8,7 @@ dist
 .DS_Store
 .env
 .env.*
+.htpasswd
+.web-credentials
+._*
+**/._*

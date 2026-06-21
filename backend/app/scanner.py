@@ -9,6 +9,7 @@ from typing import Optional
 from .analysis import analyze_symbol
 from .bybit_client import BybitClient
 from .config import config
+from .detector_v2 import detect_v2
 from .models import ScanRequest, ScanResponse, ScanResult
 
 
@@ -22,6 +23,7 @@ class ScannerService:
         self._cache_key: Optional[tuple[int, bool, int, float]] = None
         self._cache_created_monotonic: float = 0
         self._scan_lock = asyncio.Lock()
+        self.last_background_results: list[ScanResult] = []
 
     def _request_key(self, request: ScanRequest) -> tuple[int, bool, int, float]:
         return (request.min_rating, request.include_neutral, request.max_results, request.turnover_24h_min)
@@ -94,7 +96,11 @@ class ScannerService:
         results: list[ScanResult] = []
         now_ms = int(time.time() * 1000)
 
-        async def process(instrument_index: int, symbol: str, tick_size: float) -> Optional[ScanResult]:
+        async def process(
+            instrument_index: int,
+            symbol: str,
+            tick_size: float,
+        ) -> tuple[Optional[ScanResult], Optional[ScanResult]]:
             nonlocal errors, analyzed
             if instrument_index and instrument_index % config.max_concurrent_requests == 0:
                 await asyncio.sleep(config.delay_between_batches_ms / 1000)
@@ -102,7 +108,7 @@ class ScannerService:
                 try:
                     candles = btc_candles if symbol == "BTCUSDT" else await self.bybit.klines(symbol)
                     analyzed += 1
-                    return analyze_symbol(
+                    primary = analyze_symbol(
                         tickers[symbol],
                         candles,
                         tick_size,
@@ -111,20 +117,36 @@ class ScannerService:
                         now_ms=now_ms,
                         btc_candles=btc_candles,
                     )
+                    background = detect_v2(
+                        tickers[symbol],
+                        candles,
+                        tick_size,
+                        now_ms,
+                        btc_candles=btc_candles,
+                    )
+                    return primary, background
                 except Exception:
                     errors += 1
                     logger.exception("symbol_analysis_failed symbol=%s endpoint=/v5/market/kline", symbol)
-                    return None
+                    return None, None
 
         tasks = [
             process(index, instrument.symbol, instrument.tick_size)
             for index, instrument in enumerate(eligible_instruments)
         ]
-        for result in await asyncio.gather(*tasks):
-            if result is not None:
-                results.append(result)
+        background_results: list[ScanResult] = []
+        for primary, background in await asyncio.gather(*tasks):
+            if primary is not None:
+                results.append(primary)
+            if background is not None:
+                background_results.append(background)
 
         filtered_results = self._apply_response_filters(results, request)
+        self.last_background_results = sorted(
+            background_results,
+            key=lambda result: result.rating,
+            reverse=True,
+        )
         duration_ms = round((time.perf_counter() - started) * 1000)
         response = ScanResponse(
             scan_time=scan_time,

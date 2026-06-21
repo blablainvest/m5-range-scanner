@@ -7,6 +7,7 @@ from backend.app.analysis import (
     count_independent_zone_touches,
     direction_from_trend,
     is_valid_sideways,
+    previous_trend,
     price_position,
     setup_class,
     setup_rating,
@@ -150,16 +151,27 @@ def test_adx_uses_wilder_smoothing_and_is_available_for_scoring() -> None:
 def test_direction_requires_trend_alignment() -> None:
     assert direction_from_trend(0.9, "bullish") == ("LONG", "near_resistance", "aligned")
     assert direction_from_trend(0.1, "bearish") == ("SHORT", "near_support", "aligned")
-    assert direction_from_trend(0.1, "bullish") == ("NEUTRAL", "trend_mismatch", "mismatch")
-    assert direction_from_trend(0.9, "bearish") == ("NEUTRAL", "trend_mismatch", "mismatch")
+    assert direction_from_trend(0.1, "bullish") == ("LONG", "trend_mismatch", "mismatch")
+    assert direction_from_trend(0.9, "bearish") == ("SHORT", "trend_mismatch", "mismatch")
+    assert direction_from_trend(0.5, "neutral-bullish") == ("LONG", "range_developing", "developing")
+    assert direction_from_trend(0.5, "neutral-bearish") == ("SHORT", "range_developing", "developing")
+
+
+def test_previous_trend_always_resolves_to_bullish_or_bearish_bias() -> None:
+    upward = [candle(index * 300_000, close=100 + index * 0.001) for index in range(20)]
+    downward = [candle(index * 300_000, close=100 - index * 0.001) for index in range(20)]
+    flat = [candle(index * 300_000, close=100) for index in range(20)]
+
+    assert previous_trend(upward) in {"bullish", "neutral-bullish"}
+    assert previous_trend(downward) in {"bearish", "neutral-bearish"}
+    assert previous_trend(flat) == "neutral-bullish"
 
 
 def test_direction_confirmation_keeps_candidate_separate_from_final_direction() -> None:
     assert confirm_direction("LONG", squeeze=70, volume_ratio=1.2) == ("LONG", "confirmed")
-    assert confirm_direction("LONG", squeeze=40, volume_ratio=1.2) == ("NEUTRAL", "weak_squeeze")
-    assert confirm_direction("SHORT", squeeze=70, volume_ratio=0.8) == ("NEUTRAL", "weak_volume")
-    assert confirm_direction("SHORT", squeeze=20, volume_ratio=0.8) == ("NEUTRAL", "weak_squeeze_and_volume")
-    assert confirm_direction("NEUTRAL", squeeze=0, volume_ratio=0.0) == ("NEUTRAL", "not_applicable")
+    assert confirm_direction("LONG", squeeze=40, volume_ratio=1.2) == ("LONG", "weak_squeeze")
+    assert confirm_direction("SHORT", squeeze=70, volume_ratio=0.8) == ("SHORT", "weak_volume")
+    assert confirm_direction("SHORT", squeeze=20, volume_ratio=0.8) == ("SHORT", "weak_squeeze_and_volume")
 
 
 def test_btc_context_uses_synchronized_log_returns() -> None:
@@ -316,7 +328,7 @@ def test_analyze_symbol_preserves_aligned_trend_when_confirmation_is_weak() -> N
 
     assert result is not None
     assert result.direction_candidate == "LONG"
-    assert result.direction == "NEUTRAL"
+    assert result.direction == "LONG"
     assert result.trend_alignment == "aligned"
     assert result.direction_confirmation in {"weak_volume", "weak_squeeze_and_volume"}
     assert "previous trend is neutral" not in result.warnings

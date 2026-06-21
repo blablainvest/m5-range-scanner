@@ -7,6 +7,8 @@ from typing import Optional
 
 from .config import config
 from .models import Candle, ChartCandle, ScanResult, Ticker
+from .trade_plan import atr_14 as price_atr_14
+from .trade_plan import build_trade_plan, build_trade_plan_variants
 
 
 @dataclass
@@ -324,8 +326,8 @@ def is_valid_sideways(metrics: SidewaysMetrics) -> bool:
 
 
 def previous_trend(candles: list[Candle]) -> str:
-    if len(candles) < 10:
-        return "neutral"
+    if len(candles) < 2:
+        return "neutral-bullish"
     closes = [candle.close for candle in candles[-50:]]
     n = len(closes)
     x_mean = (n - 1) / 2
@@ -343,11 +345,11 @@ def previous_trend(candles: list[Candle]) -> str:
         return "bullish"
     if slope_pct < -0.01 and (highs_down or lows_down):
         return "bearish"
-    if slope_pct > 0.015:
+    if slope_pct > 0:
         return "neutral-bullish"
-    if slope_pct < -0.015:
+    if slope_pct < 0:
         return "neutral-bearish"
-    return "neutral"
+    return "neutral-bullish" if closes[-1] >= closes[0] else "neutral-bearish"
 
 
 def squeeze_score(candles: list[Candle], support: float, resistance: float, direction_hint: str, tick_size: float) -> int:
@@ -403,7 +405,8 @@ def turnover_metrics(all_closed: list[Candle], range_start_index: int, range_can
     return turnover_1h, range_avg, previous_avg, ratio
 
 
-def to_chart_candles(candles: list[Candle]) -> list[ChartCandle]:
+def to_chart_candles(candles: list[Candle], limit: Optional[int] = 80) -> list[ChartCandle]:
+    selected = candles[-limit:] if limit is not None else candles
     return [
         ChartCandle(
             timestamp=candle.timestamp,
@@ -411,9 +414,10 @@ def to_chart_candles(candles: list[Candle]) -> list[ChartCandle]:
             high=candle.high,
             low=candle.low,
             close=candle.close,
+            volume=candle.volume,
             turnover=candle.turnover,
         )
-        for candle in candles[-80:]
+        for candle in selected
     ]
 
 
@@ -505,33 +509,28 @@ def setup_class(rating: int) -> str:
 
 
 def direction_from_trend(position: float, trend: str) -> tuple[str, str, str]:
-    if position >= 0.75:
-        if trend in ("bullish", "neutral-bullish"):
+    if trend in ("bullish", "neutral-bullish"):
+        if position >= 0.75:
             return "LONG", "near_resistance", "aligned"
-        if trend in ("bearish", "neutral-bearish"):
-            return "NEUTRAL", "trend_mismatch", "mismatch"
-        return "NEUTRAL", "range_only", "neutral"
+        if position <= 0.25:
+            return "LONG", "trend_mismatch", "mismatch"
+        return "LONG", "range_developing", "developing"
     if position <= 0.25:
-        if trend in ("bearish", "neutral-bearish"):
-            return "SHORT", "near_support", "aligned"
-        if trend in ("bullish", "neutral-bullish"):
-            return "NEUTRAL", "trend_mismatch", "mismatch"
-        return "NEUTRAL", "range_only", "neutral"
-    return "NEUTRAL", "range_only", "neutral"
+        return "SHORT", "near_support", "aligned"
+    if position >= 0.75:
+        return "SHORT", "trend_mismatch", "mismatch"
+    return "SHORT", "range_developing", "developing"
 
 
 def confirm_direction(direction_candidate: str, squeeze: int, volume_ratio: float) -> tuple[str, str]:
-    if direction_candidate == "NEUTRAL":
-        return "NEUTRAL", "not_applicable"
-
     weak_squeeze = squeeze < 45
     weak_volume = volume_ratio < 1.0
     if weak_squeeze and weak_volume:
-        return "NEUTRAL", "weak_squeeze_and_volume"
+        return direction_candidate, "weak_squeeze_and_volume"
     if weak_squeeze:
-        return "NEUTRAL", "weak_squeeze"
+        return direction_candidate, "weak_squeeze"
     if weak_volume:
-        return "NEUTRAL", "weak_volume"
+        return direction_candidate, "weak_volume"
     return direction_candidate, "confirmed"
 
 
@@ -695,9 +694,9 @@ def analyze_symbol(
                 squeeze = squeeze_score(window_candles, support, resistance, direction_candidate, tick_size)
                 turnover_1h, range_avg, prev_avg, vol_ratio = turnover_metrics(closed, range_start_index, window_candles)
                 direction, direction_confirmation = confirm_direction(direction_candidate, squeeze, vol_ratio)
-                if direction_candidate != "NEUTRAL" and direction_confirmation != "confirmed":
+                if direction_confirmation != "confirmed":
                     status = "range_only"
-                if direction != "NEUTRAL" and squeeze >= 60 and vol_ratio >= 1.2:
+                if squeeze >= 60 and vol_ratio >= 1.2:
                     status = "breakout_watch"
 
                 rating = setup_rating(
@@ -741,10 +740,6 @@ def analyze_symbol(
                 warnings = []
                 if trend_alignment == "mismatch":
                     warnings.append("trend mismatch")
-                if trend_alignment == "neutral":
-                    warnings.append("previous trend is neutral")
-                if direction == "NEUTRAL":
-                    warnings.append("direction is neutral")
                 if direction_confirmation == "weak_squeeze":
                     warnings.append("direction candidate has weak squeeze")
                 elif direction_confirmation == "weak_volume":
@@ -803,8 +798,6 @@ def analyze_symbol(
                 )
 
     eligible = [candidate for candidate in candidates if candidate.score >= min_rating]
-    if not include_neutral:
-        eligible = [candidate for candidate in eligible if candidate.direction != "NEUTRAL"]
     if not eligible:
         return None
 
@@ -825,6 +818,28 @@ def analyze_symbol(
         change_1h = ((ticker.last_price - ticker.prev_price_1h) / ticker.prev_price_1h) * 100
     chart_start_index = max(0, best.trend_start_index, len(closed) - 80)
     chart_candles = to_chart_candles(closed[chart_start_index : best.range_end_index + 1])
+    ml_candles = to_chart_candles(
+        closed[max(0, best.range_start_index - 50) : best.range_end_index + 1],
+        limit=None,
+    )
+    trade_plan = build_trade_plan(
+        direction=best.direction,
+        support=best.support,
+        resistance=best.resistance,
+        current_price=ticker.last_price,
+        tick_size=tick_size,
+        range_candles=best.candles,
+    )
+    trade_plan_variants = build_trade_plan_variants(
+        direction=best.direction,
+        support=best.support,
+        resistance=best.resistance,
+        current_price=ticker.last_price,
+        tick_size=tick_size,
+        range_candles=best.candles,
+        context_candles=closed[max(0, best.range_start_index - 20) : best.range_end_index + 1],
+    )
+    atr_value = price_atr_14(closed[max(0, best.range_end_index - 30) : best.range_end_index + 1])
     closed_btc = closed_candles(btc_candles or [], now_ms)
     btc = btc_context(ticker.symbol, closed, closed_btc, best.direction_candidate)
     rating_with_btc_preview = max(0, min(100, best.score + btc.score_adjustment))
@@ -836,6 +851,11 @@ def analyze_symbol(
         change_1h_pct=change_1h,
         turnover_24h_usd=ticker.turnover_24h_usd,
         turnover_1h_usd=best.turnover_1h_usd,
+        funding_rate=ticker.funding_rate,
+        open_interest=ticker.open_interest,
+        open_interest_value=ticker.open_interest_value,
+        tick_size=tick_size,
+        atr_14=atr_value,
         rating=best.score,
         setup_class=setup_class(best.score),
         setup_status=best.setup_status,
@@ -875,10 +895,22 @@ def analyze_symbol(
         body_inside_ratio=best.body_inside_ratio,
         trend_alignment=best.trend_alignment,
         chart_candles=chart_candles,
+        ml_candles=ml_candles,
         range_start_timestamp=closed[best.range_start_index].timestamp,
         range_end_timestamp=closed[best.range_end_index].timestamp,
         trend_start_timestamp=closed[best.trend_start_index].timestamp,
         trend_end_timestamp=closed[best.trend_end_index].timestamp,
+        trade_plan_status=trade_plan.status,
+        trade_plan_reason=trade_plan.reason,
+        trade_plan_version=trade_plan.version,
+        entry_price=trade_plan.entry_price,
+        stop_loss=trade_plan.stop_loss,
+        take_profit=trade_plan.take_profit,
+        risk_price=trade_plan.risk_price,
+        reward_risk=trade_plan.reward_risk,
+        shelf_start_timestamp=trade_plan.shelf_start_timestamp,
+        shelf_end_timestamp=trade_plan.shelf_end_timestamp,
+        trade_plan_variants=trade_plan_variants,
         reasons=best.reasons,
         warnings=best.warnings,
     )

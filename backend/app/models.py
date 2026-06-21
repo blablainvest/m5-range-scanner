@@ -9,7 +9,7 @@ class ScanRequest(BaseModel):
     force: bool = False
     min_rating: int = Field(default=70, ge=0, le=100)
     include_neutral: bool = True
-    max_results: int = Field(default=50, ge=1, le=200)
+    max_results: int = Field(default=50, ge=1, le=1000)
     turnover_24h_min: float = Field(default=2_000_000, ge=0)
 
 
@@ -29,6 +29,7 @@ class ChartCandle(BaseModel):
     high: float
     low: float
     close: float
+    volume: float
     turnover: float
 
 
@@ -51,6 +52,23 @@ class Ticker(BaseModel):
     open_interest_value: Optional[float] = None
 
 
+class TradePlanView(BaseModel):
+    version: str
+    status: str
+    reason: Optional[str] = None
+    direction: str
+    activation: str
+    entry_price: Optional[float] = None
+    stop_loss: Optional[float] = None
+    risk_price: Optional[float] = None
+    target_1r: Optional[float] = None
+    target_2r: Optional[float] = None
+    target_3r: Optional[float] = None
+    trigger_price: Optional[float] = None
+    retest_zone_low: Optional[float] = None
+    retest_zone_high: Optional[float] = None
+
+
 class ScanResult(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -60,6 +78,11 @@ class ScanResult(BaseModel):
     change_1h_pct: Optional[float]
     turnover_24h_usd: float
     turnover_1h_usd: float
+    funding_rate: Optional[float] = None
+    open_interest: Optional[float] = None
+    open_interest_value: Optional[float] = None
+    tick_size: float = 0.0
+    atr_14: float = 0.0
     rating: int
     setup_class: str = Field(alias="class")
     setup_status: str
@@ -99,10 +122,22 @@ class ScanResult(BaseModel):
     body_inside_ratio: float
     trend_alignment: str
     chart_candles: list[ChartCandle]
+    ml_candles: list[ChartCandle] = Field(default_factory=list)
     range_start_timestamp: int
     range_end_timestamp: int
     trend_start_timestamp: int
     trend_end_timestamp: int
+    trade_plan_status: str = "NOT_APPLICABLE"
+    trade_plan_reason: Optional[str] = None
+    trade_plan_version: Optional[str] = None
+    entry_price: Optional[float] = None
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+    risk_price: Optional[float] = None
+    reward_risk: Optional[float] = None
+    shelf_start_timestamp: Optional[int] = None
+    shelf_end_timestamp: Optional[int] = None
+    trade_plan_variants: list[TradePlanView] = Field(default_factory=list)
     reasons: list[str]
     warnings: list[str]
 
@@ -117,3 +152,66 @@ class ScanResponse(BaseModel):
     signals_found: int
     from_cache: bool
     results: list[ScanResult]
+
+
+class HistoryItem(BaseModel):
+    id: int
+    symbol: str
+    direction: str
+    first_seen_at: str
+    last_seen_at: str
+    rating: int
+    setup_class: str
+    support_level: float
+    resistance_level: float
+    entry_price: Optional[float]
+    stop_loss: Optional[float]
+    take_profit: Optional[float]
+    reward_risk: Optional[float]
+    trade_plan_status: str
+    outcome: str
+    entered_at: Optional[str]
+    resolved_at: Optional[str]
+    price_at_deadline: Optional[float]
+    mfe_r: Optional[float]
+    mae_r: Optional[float]
+    ambiguous_intrabar: bool
+
+
+class HistoryResponse(BaseModel):
+    page: int
+    page_size: int
+    total: int
+    items: list[HistoryItem]
+
+
+class TradePlanResultView(BaseModel):
+    horizon_minutes: int
+    outcome: str
+    entry_price: Optional[float] = None
+    stop_loss: Optional[float] = None
+    target_1r: Optional[float] = None
+    target_2r: Optional[float] = None
+    target_3r: Optional[float] = None
+    entered_at: Optional[str] = None
+    stopped_at: Optional[str] = None
+    hit_1r_at: Optional[str] = None
+    hit_2r_at: Optional[str] = None
+    hit_3r_at: Optional[str] = None
+    mfe_r: Optional[float] = None
+    mae_r: Optional[float] = None
+    ambiguous_intrabar: bool = False
+
+
+class HistoricalPlanView(TradePlanView):
+    id: int
+    results: list[TradePlanResultView] = Field(default_factory=list)
+
+
+class SetupDetailResponse(BaseModel):
+    setup: HistoryItem
+    detector_version: str
+    feature_schema_version: str
+    snapshot_id: Optional[int] = None
+    result: ScanResult
+    plans: list[HistoricalPlanView]

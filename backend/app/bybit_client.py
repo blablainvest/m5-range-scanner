@@ -41,7 +41,7 @@ class BybitClient:
         self._client = httpx.AsyncClient(
             base_url=config.bybit_base_url,
             timeout=config.request_timeout_seconds,
-            headers={"User-Agent": "m5-range-scanner/0.2.0"},
+            headers={"User-Agent": "m5-range-scanner/0.3.0"},
             transport=transport,
         )
 
@@ -120,10 +120,28 @@ class BybitClient:
             )
         return tickers
 
-    async def klines(self, symbol: str) -> list[Candle]:
+    async def klines(
+        self,
+        symbol: str,
+        *,
+        interval: str = "5",
+        limit: Optional[int] = None,
+        start_ms: Optional[int] = None,
+        end_ms: Optional[int] = None,
+    ) -> list[Candle]:
+        params: dict[str, Any] = {
+            "category": "linear",
+            "symbol": symbol,
+            "interval": interval,
+            "limit": limit or config.kline_limit,
+        }
+        if start_ms is not None:
+            params["start"] = start_ms
+        if end_ms is not None:
+            params["end"] = end_ms
         result = await self._get(
             "/v5/market/kline",
-            {"category": "linear", "symbol": symbol, "interval": "5", "limit": config.kline_limit},
+            params,
         )
         candles: list[Candle] = []
         for row in result.get("list", []):
