@@ -457,9 +457,8 @@ def evaluate_plan(
             "NO_TRADE", entry_price, stop_loss, target_1r, target_2r, target_3r,
             None, None, None, None, None, None, None, False
         )
-    terminal = "2R" if hit_2r else "1R" if hit_1r else "PENDING"
     return PlanEvaluation(
-        terminal,
+        "PENDING",
         entry_price,
         stop_loss,
         target_1r,

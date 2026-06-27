@@ -206,17 +206,36 @@ def build_trade_plan_variants(
 
     if direction == "LONG":
         v2_entry = _round_to_tick(resistance + buffer_price, tick_size, "up")
-        raw_stop = max(support + width * 0.5, resistance - max(atr_value * 1.2, width * 0.2))
-        v2_stop = _round_to_tick(raw_stop, tick_size, "down")
-        v2_risk = v2_entry - v2_stop
+        shelf = _shelf_candles(range_candles, direction, support, resistance)
+        v2_stop = (
+            _round_to_tick(min(candle.low for candle in shelf) - tick_size * 2, tick_size, "down")
+            if shelf
+            else None
+        )
+        v2_risk = v2_entry - v2_stop if v2_stop is not None else None
+        stop_depth = resistance - v2_stop if v2_stop is not None else None
     else:
         v2_entry = _round_to_tick(support - buffer_price, tick_size, "down")
-        raw_stop = min(resistance - width * 0.5, support + max(atr_value * 1.2, width * 0.2))
-        v2_stop = _round_to_tick(raw_stop, tick_size, "up")
-        v2_risk = v2_stop - v2_entry
-    v2_status = "READY" if v2_risk > 0 and v2_risk <= width * 0.75 else "INVALID"
-    v2_reason = None if v2_status == "READY" else "adaptive stop is too deep"
-    v2_targets = _targets(direction, v2_entry, v2_risk, tick_size) if v2_status == "READY" else (None, None, None)
+        shelf = _shelf_candles(range_candles, direction, support, resistance)
+        v2_stop = (
+            _round_to_tick(max(candle.high for candle in shelf) + tick_size * 2, tick_size, "up")
+            if shelf
+            else None
+        )
+        v2_risk = v2_stop - v2_entry if v2_stop is not None else None
+        stop_depth = v2_stop - support if v2_stop is not None else None
+
+    v2_reason = None
+    if not shelf:
+        v2_reason = "no 3-7 candle shelf near entry"
+    elif v2_stop is None or v2_risk is None or v2_risk <= 0:
+        v2_reason = "stop is on the wrong side of entry"
+    elif stop_depth is None or stop_depth > width * 0.5:
+        v2_reason = "stop is deeper than 50% of range"
+    elif v2_stop <= support or v2_stop >= resistance:
+        v2_reason = "stop is outside the range"
+    v2_status = "READY" if v2_reason is None else "INVALID"
+    v2_targets = _targets(direction, v2_entry, v2_risk or 0.0, tick_size) if v2_status == "READY" else (None, None, None)
     views.append(
         TradePlanView(
             version="breakout-buffer-v2",

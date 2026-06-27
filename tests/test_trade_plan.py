@@ -1,7 +1,7 @@
 import pytest
 
 from backend.app.models import Candle
-from backend.app.trade_plan import build_trade_plan
+from backend.app.trade_plan import build_trade_plan, build_trade_plan_variants
 
 
 def candle(index: int, *, high: float, low: float, close: float) -> Candle:
@@ -124,3 +124,51 @@ def test_neutral_and_already_crossed_entries_do_not_create_plan() -> None:
 
     assert neutral.status == "NOT_APPLICABLE"
     assert crossed.status == "INVALID"
+
+
+def test_v2_enters_after_buffer_but_uses_shelf_stop() -> None:
+    shelf = [
+        candle(0, high=100.9, low=100.2, close=100.8),
+        candle(1, high=101.0, low=100.3, close=100.9),
+        candle(2, high=101.0, low=100.4, close=100.85),
+    ]
+
+    plans = build_trade_plan_variants(
+        direction="LONG",
+        support=99,
+        resistance=101,
+        current_price=100.8,
+        tick_size=0.01,
+        range_candles=shelf,
+        context_candles=shelf,
+    )
+    v2 = next(plan for plan in plans if plan.version == "breakout-buffer-v2")
+
+    assert v2.status == "READY"
+    assert v2.activation == "price_crosses_buffer"
+    assert v2.entry_price > 101
+    assert v2.stop_loss == 100.18
+    assert v2.risk_price == pytest.approx(v2.entry_price - 100.18)
+    assert v2.target_3r == pytest.approx(v2.entry_price + v2.risk_price * 3)
+
+
+def test_v2_rejects_shelf_stop_deeper_than_half_range() -> None:
+    deep_shelf = [
+        candle(0, high=101.0, low=99.8, close=100.8),
+        candle(1, high=101.0, low=99.7, close=100.9),
+        candle(2, high=101.0, low=99.6, close=100.85),
+    ]
+
+    plans = build_trade_plan_variants(
+        direction="LONG",
+        support=99,
+        resistance=101,
+        current_price=100.8,
+        tick_size=0.01,
+        range_candles=deep_shelf,
+        context_candles=deep_shelf,
+    )
+    v2 = next(plan for plan in plans if plan.version == "breakout-buffer-v2")
+
+    assert v2.status == "INVALID"
+    assert v2.reason == "stop is deeper than 50% of range"

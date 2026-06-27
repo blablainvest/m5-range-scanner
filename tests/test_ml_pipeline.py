@@ -155,3 +155,80 @@ def test_entered_plan_without_1r_stays_pending() -> None:
 
     assert evaluation.outcome == "PENDING"
     assert evaluation.entered_at == datetime.fromtimestamp(0, tz=timezone.utc)
+
+
+def test_entered_plan_that_only_hits_1r_stays_pending() -> None:
+    plan = TradePlanVariant(
+        snapshot_id=1,
+        plan_version="breakout-buffer-v2",
+        status="READY",
+        direction="LONG",
+        activation="price_crosses_buffer",
+        entry_price=101,
+        stop_loss=100,
+        risk_price=1,
+        target_1r=102,
+        target_2r=103,
+        target_3r=104,
+        parameters_json={},
+    )
+    m1 = [
+        Candle(
+            timestamp=0,
+            open=101,
+            high=102.2,
+            low=100.6,
+            close=102,
+            volume=100,
+            turnover=10_000,
+        )
+    ]
+
+    evaluation = evaluate_plan(plan, m1, [])
+
+    assert evaluation.outcome == "PENDING"
+    assert evaluation.hit_1r_at == datetime.fromtimestamp(0, tz=timezone.utc)
+    assert evaluation.hit_3r_at is None
+
+
+def test_plan_can_stop_after_touching_1r() -> None:
+    plan = TradePlanVariant(
+        snapshot_id=1,
+        plan_version="breakout-buffer-v2",
+        status="READY",
+        direction="LONG",
+        activation="price_crosses_buffer",
+        entry_price=101,
+        stop_loss=100,
+        risk_price=1,
+        target_1r=102,
+        target_2r=103,
+        target_3r=104,
+        parameters_json={},
+    )
+    m1 = [
+        Candle(
+            timestamp=0,
+            open=101,
+            high=102.2,
+            low=100.6,
+            close=102,
+            volume=100,
+            turnover=10_000,
+        ),
+        Candle(
+            timestamp=60_000,
+            open=102,
+            high=102.1,
+            low=99.9,
+            close=100,
+            volume=100,
+            turnover=10_000,
+        ),
+    ]
+
+    evaluation = evaluate_plan(plan, m1, [])
+
+    assert evaluation.outcome == "STOP"
+    assert evaluation.hit_1r_at == datetime.fromtimestamp(0, tz=timezone.utc)
+    assert evaluation.stopped_at == datetime.fromtimestamp(60, tz=timezone.utc)
